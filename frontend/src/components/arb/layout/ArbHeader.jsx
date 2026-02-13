@@ -1,5 +1,5 @@
 import React, { memo } from 'react';
-import { Activity, Wifi, WifiOff, Radio, Pause, Play, AlertTriangle, CheckCircle } from 'lucide-react';
+import { Activity, Wifi, WifiOff, Radio, Pause, Play, AlertTriangle, CheckCircle, Database, ArrowRightLeft, Search } from 'lucide-react';
 import { HEADER_HEIGHT } from '../utils/styleConstants';
 
 const FeedStatusBadge = memo(({ label, count, ageSeconds, isActive }) => {
@@ -49,7 +49,70 @@ const FeedStatusBar = memo(({ feedStats }) => {
 });
 FeedStatusBar.displayName = 'FeedStatusBar';
 
-const ArbHeader = ({ connectionStatus, systemState, feedStats, captainPaused, onCaptainPauseToggle, exchangeStatus }) => {
+const GatewaySourceBadge = memo(({ gatewayConfig }) => {
+  if (!gatewayConfig) return null;
+  const isHybrid = gatewayConfig.hybrid_mode;
+
+  if (isHybrid) {
+    return (
+      <div
+        className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-gradient-to-r from-cyan-900/20 to-amber-900/20 border border-cyan-500/15"
+        title={`Market data: ${gatewayConfig.market_data_host} (prod)\nTrading: ${gatewayConfig.trading_host} (demo sub#${gatewayConfig.subaccount})`}
+      >
+        <ArrowRightLeft className="w-2.5 h-2.5 text-cyan-400/70" />
+        <span className="text-[8px] font-mono font-semibold text-cyan-300/80 uppercase">Prod</span>
+        <span className="text-[7px] text-gray-500">data</span>
+        <span className="text-[7px] text-gray-600">/</span>
+        <span className="text-[8px] font-mono font-semibold text-amber-300/80 uppercase">Demo</span>
+        <span className="text-[7px] text-gray-500">trade</span>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-amber-900/15 border border-amber-500/15"
+      title={`All data + trading: ${gatewayConfig.trading_host} (demo sub#${gatewayConfig.subaccount})`}
+    >
+      <Database className="w-2.5 h-2.5 text-amber-400/60" />
+      <span className="text-[8px] font-mono font-semibold text-amber-300/70 uppercase">Demo</span>
+    </div>
+  );
+});
+GatewaySourceBadge.displayName = 'GatewaySourceBadge';
+
+const formatCredits = (n) => {
+  if (n >= 1000) return `${(n / 1000).toFixed(n % 1000 === 0 ? 0 : 1)}K`;
+  return String(n);
+};
+
+const TavilyBudgetBadge = memo(({ tavilyBudget }) => {
+  if (!tavilyBudget) return null;
+
+  const used = tavilyBudget.credits_used ?? 0;
+  const limit = tavilyBudget.credits_limit ?? 1;
+  const pct = limit > 0 ? (used / limit) * 100 : 0;
+
+  const colorClass = pct > 80 ? 'text-red-400' : pct > 50 ? 'text-amber-400' : 'text-emerald-400';
+  const dotColor = pct > 80 ? 'bg-red-500' : pct > 50 ? 'bg-amber-500' : 'bg-emerald-500';
+  const borderColor = pct > 80 ? 'border-red-500/15' : pct > 50 ? 'border-amber-500/15' : 'border-gray-800/30';
+
+  return (
+    <div
+      className={`flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-gray-900/40 border ${borderColor}`}
+      title={`Tavily: ${used}/${limit} credits used (${Math.round(pct)}%) | ${tavilyBudget.searches_today ?? 0} searches today`}
+    >
+      <Search className={`w-2.5 h-2.5 ${colorClass} opacity-70`} />
+      <span className={`text-[9px] font-mono ${colorClass}`}>
+        {formatCredits(used)}/{formatCredits(limit)}
+      </span>
+      <span className={`w-1 h-1 rounded-full ${dotColor}`} />
+    </div>
+  );
+});
+TavilyBudgetBadge.displayName = 'TavilyBudgetBadge';
+
+const ArbHeader = ({ connectionStatus, systemState, feedStats, captainPaused, onCaptainPauseToggle, exchangeStatus, gatewayConfig, tavilyBudget }) => {
   const isConnected = connectionStatus === 'connected';
   const stateLabel = (systemState || 'initializing').replace(/_/g, ' ').toUpperCase();
   const isActive = exchangeStatus?.active ?? true;
@@ -78,6 +141,7 @@ const ArbHeader = ({ connectionStatus, systemState, feedStats, captainPaused, on
           <span className="px-1.5 py-0.5 text-[8px] font-mono font-semibold bg-violet-500/12 text-violet-300/80 rounded-full border border-violet-500/15 uppercase tracking-wider">
             Arb
           </span>
+          <GatewaySourceBadge gatewayConfig={gatewayConfig} />
         </div>
 
         {/* Right: controls */}
@@ -115,6 +179,7 @@ const ArbHeader = ({ connectionStatus, systemState, feedStats, captainPaused, on
           </button>
 
           <FeedStatusBar feedStats={feedStats} />
+          <TavilyBudgetBadge tavilyBudget={tavilyBudget} />
 
           {/* Connection */}
           <div

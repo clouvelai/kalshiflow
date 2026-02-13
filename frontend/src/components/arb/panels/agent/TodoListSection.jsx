@@ -2,6 +2,21 @@ import React, { memo, useMemo } from 'react';
 import { ListTodo, Check, Loader2, Circle, AlertTriangle } from 'lucide-react';
 
 /**
+ * formatRelativeTime - Human-readable relative time from an ISO timestamp.
+ */
+function formatRelativeTime(isoString) {
+  if (!isoString) return '';
+  const diff = Date.now() - new Date(isoString).getTime();
+  if (Number.isNaN(diff)) return '';
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+/**
  * StatusIcon - Proper icon for todo status.
  */
 const StatusIcon = ({ status }) => {
@@ -70,6 +85,11 @@ const TodoListSection = memo(({ todos }) => {
                 <PriorityBadge priority={todo.priority} />
                 {todo.text || todo.content || todo.description || JSON.stringify(todo)}
               </span>
+              {(todo.updated_at || todo.created_at) && (
+                <span className="block text-[9px] text-gray-500 mt-0.5">
+                  {formatRelativeTime(todo.updated_at || todo.created_at)}
+                </span>
+              )}
             </div>
           </div>
         ))}

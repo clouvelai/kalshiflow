@@ -1,6 +1,6 @@
 import React, { memo, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Loader2, Eye, Terminal, Crosshair, AlertTriangle, Radio } from 'lucide-react';
+import { Loader2, Eye, Terminal, Crosshair, AlertTriangle, Radio, Database } from 'lucide-react';
 import CaptainHeader from '../panels/agent/CaptainHeader';
 import AgentStateIndicator from '../panels/agent/AgentStateIndicator';
 import AttentionFeed from '../panels/agent/AttentionFeed';
@@ -71,6 +71,11 @@ const ThinkingPanel = memo(({ thinking, activeToolCall, isRunning }) => {
           <div className="flex items-center gap-2 py-0.5">
             <Loader2 className="w-3 h-3 text-cyan-400 animate-spin" />
             <span className="text-[11px] font-mono text-cyan-400/80">{activeToolCall.tool_name}()</span>
+          </div>
+        ) : isRunning && thinking.phase === 'data_fetch' ? (
+          <div className="flex items-center gap-2 py-0.5 text-violet-400/80">
+            <Database className="w-3 h-3 animate-pulse" />
+            <span className="text-[11px]">{thinking.phaseDetail || 'Loading data...'}</span>
           </div>
         ) : isRunning ? (
           <div className="flex items-center gap-2 py-0.5 text-gray-500">

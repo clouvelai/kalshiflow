@@ -45,7 +45,7 @@ export const useArbAgent = (agentMessages = []) => {
   const [cycleCount, setCycleCount] = useState(snapshot?.cycleCount ?? 0);
   const [cycleMode, setCycleMode] = useState(null);
   const [thinking, setThinking] = useState(
-    snapshot?.thinking ?? { text: '', agent: null, streaming: false }
+    snapshot?.thinking ?? { text: '', agent: null, streaming: false, phase: null, phaseDetail: '' }
   );
   const [activeToolCall, setActiveToolCall] = useState(null);
   const [toolCalls, setToolCalls] = useState(snapshot?.toolCalls ?? []);
@@ -117,12 +117,24 @@ export const useArbAgent = (agentMessages = []) => {
         }
         break;
 
+      case 'captain_phase':
+        setThinking(prev => ({
+          ...prev,
+          phase: msg.phase || null,
+          phaseDetail: msg.detail || '',
+        }));
+        break;
+
+      case 'captain_heartbeat':
+        // No-op: presence signal to prevent frontend from looking dead
+        break;
+
       case 'subagent_start':
         setIsRunning(true);
         if (msg.agent === 'single_arb_captain') {
           setCycleCount(c => c + 1);
           setCycleMode(msg.mode || null);
-          setThinking({ text: '', agent: msg.agent, streaming: false });
+          setThinking({ text: '', agent: msg.agent, streaming: false, phase: null, phaseDetail: '' });
         }
         break;
 
@@ -130,6 +142,7 @@ export const useArbAgent = (agentMessages = []) => {
         if (msg.agent === 'single_arb_captain') {
           setIsRunning(false);
           setCycleMode(null);
+          setThinking(prev => ({ ...prev, phase: null, phaseDetail: '' }));
         }
         break;
 

@@ -64,7 +64,7 @@ def _market_snapshot(m: "MarketMeta") -> MarketSnapshot:
 
 def _market_regime(m: "MarketMeta") -> str:
     """Detect per-market regime from microstructure signals. Pure Python."""
-    if m.micro.vpin > 0.85:
+    if m.micro.vpin > 0.98:
         return "toxic"
     if m.micro.sweep_active:
         return "sweep"
@@ -76,7 +76,7 @@ def _market_regime(m: "MarketMeta") -> str:
 def _compute_regime(event: "EventMeta") -> str:
     """Detect event-level regime (worst-case across markets). Pure Python."""
     for m in event.markets.values():
-        if m.micro.vpin > 0.85:
+        if m.micro.vpin > 0.98:
             return "toxic"
         if m.micro.sweep_active:
             return "sweep"
@@ -336,7 +336,25 @@ class ContextBuilder:
                 f"capital_active={sniper_status.capital_in_flight + sniper_status.capital_in_positions}c"
             )
 
-        parts.append("ACTION: Respond to attention items above.")
+        # After ATTENTION items, if any are early_bird, add detail
+        early_bird_items = [i for i in items if i.category == "early_bird"]
+        if early_bird_items:
+            parts.append("EARLY_BIRD_DETAIL:")
+            for eb in early_bird_items:
+                d = eb.data
+                detail_parts = [f"  {eb.market_ticker}"]
+                if d.get("strategy"):
+                    detail_parts.append(f"strategy={d['strategy']}")
+                if d.get("fair_value") is not None:
+                    detail_parts.append(f"fair_value={d['fair_value']:.0f}c")
+                if d.get("early_bird_score"):
+                    detail_parts.append(f"score={d['early_bird_score']:.0f}")
+                parts.append(" ".join(detail_parts))
+
+        parts.append(
+            "ACTION: Respond to attention items above ONLY. Trade, exit, or note why you pass. "
+            "Do NOT plan strategy, research unrelated events, or call write_todos in reactive mode."
+        )
         return "\n".join(parts)
 
     def build_strategic_context(
@@ -345,10 +363,13 @@ class ContextBuilder:
         pending_items: List[AttentionItem],
         sniper_status: Optional[SniperStatus] = None,
         task_section: str = "",
+        health: Optional[dict] = None,
+        early_bird_opportunities: Optional[List[dict]] = None,
     ) -> str:
         """Build prompt for strategic Captain cycles (every 5 min).
 
         Summary of portfolio, sub-threshold attention items, sniper stats, task ledger.
+        Health is pre-injected so the LLM doesn't need to call get_account_health.
         """
         parts = []
 
@@ -368,11 +389,36 @@ class ContextBuilder:
         else:
             parts.append(f"PORTFOLIO: balance={_fmt_balance(portfolio, self._subaccount)}, no positions")
 
+        # Health (pre-injected — saves a tool call)
+        if health:
+            parts.append(
+                f"HEALTH: drawdown={health.get('drawdown_pct', 0):.1f}%, "
+                f"realized_pnl={health.get('total_realized_pnl_cents', 0)}c, "
+                f"settlements={health.get('settlement_count_session', 0)}"
+            )
+
+        # Early bird opportunities
+        if early_bird_opportunities:
+            parts.append(f"EARLY_BIRD: {len(early_bird_opportunities)} opportunities")
+            for opp in early_bird_opportunities[:5]:
+                opp_parts = [f"  {opp.get('market_ticker', '?')}"]
+                if opp.get("score"):
+                    opp_parts.append(f"score={opp['score']:.0f}")
+                if opp.get("strategy"):
+                    opp_parts.append(f"strategy={opp['strategy']}")
+                if opp.get("fair_value") is not None:
+                    opp_parts.append(f"fair_value={opp['fair_value']:.0f}c")
+                if opp.get("age_seconds"):
+                    opp_parts.append(f"age={opp['age_seconds']:.0f}s")
+                parts.append(" ".join(opp_parts))
+
         # Pending attention (sub-threshold items for awareness)
         if pending_items:
             parts.append(f"PENDING_ATTENTION: {len(pending_items)} items")
             for item in pending_items[:5]:
                 parts.append(f"  - {item.to_prompt()}")
+            if any(item.category == "early_bird" for item in pending_items):
+                parts.append("TIP: Early bird opportunities detected. Call get_early_bird_opportunities for details.")
 
         # Sniper stats
         if sniper_status and sniper_status.enabled:
@@ -390,7 +436,7 @@ class ContextBuilder:
         if task_section:
             parts.append(task_section)
 
-        parts.append("ACTION: Review portfolio, tune sniper, plan research, manage positions.")
+        parts.append("ACTION: Search news on active events. Evaluate early bird opportunities. Manage positions.")
         return "\n".join(parts)
 
     def build_deep_scan_context(
@@ -403,6 +449,8 @@ class ContextBuilder:
         news_memories: Optional[List[str]] = None,
         task_section: str = "",
         market_movers: Optional[List[dict]] = None,
+        swing_patterns: Optional[List[dict]] = None,
+        early_bird_opportunities: Optional[List[dict]] = None,
     ) -> str:
         """Build prompt for deep scan Captain cycles (every 30 min).
 
@@ -459,6 +507,21 @@ class ContextBuilder:
                 f"settlements={health.get('settlement_count_session', 0)}"
             )
 
+        # Early bird opportunities
+        if early_bird_opportunities:
+            parts.append(f"EARLY_BIRD: {len(early_bird_opportunities)} opportunities")
+            for opp in early_bird_opportunities[:5]:
+                opp_parts = [f"  {opp.get('market_ticker', '?')}"]
+                if opp.get("score"):
+                    opp_parts.append(f"score={opp['score']:.0f}")
+                if opp.get("strategy"):
+                    opp_parts.append(f"strategy={opp['strategy']}")
+                if opp.get("fair_value") is not None:
+                    opp_parts.append(f"fair_value={opp['fair_value']:.0f}c")
+                if opp.get("age_seconds"):
+                    opp_parts.append(f"age={opp['age_seconds']:.0f}s")
+                parts.append(" ".join(opp_parts))
+
         # Trade outcome learnings
         if trade_memories:
             parts.append("TRADE_LEARNINGS:")
@@ -480,13 +543,23 @@ class ContextBuilder:
                     f"{m.get('change_cents', 0)}c {m.get('direction', '?')}"
                 )
 
+        # Swing-news pattern index (known news→price relationships)
+        if swing_patterns:
+            parts.append("NEWS_PATTERNS (known news->price relationships):")
+            for p in swing_patterns[:5]:
+                parts.append(
+                    f"  - \"{p.get('news_title', '?')[:80]}\" -> {p.get('direction', '?')} "
+                    f"{p.get('change_cents', 0):.0f}c on {p.get('event_ticker', '?')} "
+                    f"(confidence={p.get('causal_confidence', 0):.1f})"
+                )
+
         # Task ledger
         if task_section:
             parts.append(task_section)
 
         parts.append(
-            "ACTION: Full portfolio review. Rebalance positions, tune strategy, "
-            "review sniper performance, store learnings."
+            "ACTION: Full review. Evaluate all events against news. "
+            "Check early bird opportunities. Manage positions."
         )
         return "\n".join(parts)
 

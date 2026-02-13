@@ -24,6 +24,7 @@ from .event_bridge import GatewayEventBridge
 from .auth import GatewayAuth
 from .ws_multiplexer import WSMultiplexer
 from .rate_limiter import GatewayRateLimiter
+from .market_data_adapter import MarketDataAdapter
 from .errors import (
     KalshiError,
     KalshiAuthError,
@@ -39,6 +40,7 @@ __all__ = [
     "GatewayAuth",
     "WSMultiplexer",
     "GatewayRateLimiter",
+    "MarketDataAdapter",
     "KalshiError",
     "KalshiAuthError",
     "KalshiOrderError",

@@ -25,6 +25,9 @@ if TYPE_CHECKING:
     from ..services.upcoming_markets_syncer import UpcomingMarketsSyncer
     from ..services.api_discovery_syncer import ApiDiscoverySyncer
     from ..state.tracked_markets import TrackedMarketsState
+    from ..state.tracked_events import TrackedEventsState
+    from ..services.lifecycle_persistence_service import LifecyclePersistenceService
+    from ..services.early_bird_service import EarlyBirdService
 
 from .state_machine import TraderStateMachine as V3StateMachine, TraderState as V3State
 from .event_bus import EventBus
@@ -155,6 +158,11 @@ class V3Coordinator:
         self._upcoming_markets_syncer: Optional['UpcomingMarketsSyncer'] = None
         self._api_discovery_syncer: Optional['ApiDiscoverySyncer'] = None
         self._trade_flow_service = None
+
+        # Event-level state (lifecycle tracking)
+        self._tracked_events_state: Optional['TrackedEventsState'] = None
+        self._lifecycle_persistence: Optional['LifecyclePersistenceService'] = None
+        self._early_bird_service: Optional['EarlyBirdService'] = None
 
         # Single-event arb coordinator (initialized in _transition_to_ready when single_arb_enabled)
         self._single_arb_coordinator = None
@@ -427,10 +435,67 @@ class V3Coordinator:
             from ..services.event_lifecycle_service import EventLifecycleService
             from ..services.tracked_markets_syncer import TrackedMarketsSyncer
             from ..services.upcoming_markets_syncer import UpcomingMarketsSyncer
+            from ..state.tracked_events import TrackedEventsState
+            from ..services.lifecycle_persistence_service import LifecyclePersistenceService
             from kalshiflow.auth import KalshiAuth
             from ...data.database import rl_db
 
             auth = KalshiAuth.from_env()
+
+            # Create TrackedEventsState for event-level grouping
+            self._tracked_events_state = TrackedEventsState()
+            self._websocket_manager.set_tracked_events_state(self._tracked_events_state)
+            logger.info("TrackedEventsState initialized")
+
+            # Create LifecyclePersistenceService for DB persistence
+            if self._config.lifecycle_persistence_enabled:
+                try:
+                    self._lifecycle_persistence = LifecyclePersistenceService(db=rl_db)
+                    events_data, markets_data = await self._lifecycle_persistence.load_from_db()
+
+                    # Recover events from DB
+                    from ..state.tracked_events import TrackedEvent
+                    for ed in events_data:
+                        try:
+                            recovered = TrackedEvent.from_dict(ed)
+                            recovered.discovery_source = "db_recovery"
+                            await self._tracked_events_state.upsert_event(recovered)
+                        except Exception as e:
+                            logger.debug(f"Skipped recovering event: {e}")
+
+                    # Recover markets from DB
+                    from ..state.tracked_markets import TrackedMarket, MarketStatus
+                    for md in markets_data:
+                        try:
+                            ticker = md.get("ticker", "")
+                            if not ticker or self._tracked_markets_state.is_tracked(ticker):
+                                continue
+                            recovered_market = TrackedMarket(
+                                ticker=ticker,
+                                event_ticker=md.get("event_ticker", ""),
+                                title=md.get("title", ""),
+                                category=md.get("category", ""),
+                                status=MarketStatus(md.get("status", "active")),
+                                open_ts=md.get("open_ts", 0),
+                                close_ts=md.get("close_ts", 0),
+                                discovery_source="db_recovery",
+                                market_info=md.get("market_info", {}),
+                            )
+                            await self._tracked_markets_state.add_market(recovered_market)
+                        except Exception as e:
+                            logger.debug(f"Skipped recovering market {md.get('ticker', '?')}: {e}")
+
+                    if events_data or markets_data:
+                        logger.info(
+                            f"Recovered {len(events_data)} events, {len(markets_data)} markets from DB"
+                        )
+
+                    await self._lifecycle_persistence.start()
+                    logger.info("LifecyclePersistenceService started")
+                except Exception as e:
+                    logger.error(f"LifecyclePersistenceService init failed (degraded): {e}")
+                    self._lifecycle_persistence = None
+                    self._degraded_subsystems.add("lifecycle_persistence")
 
             self._lifecycle_client = LifecycleClient(
                 ws_url=self._config.ws_url,
@@ -450,6 +515,7 @@ class V3Coordinator:
                 db=rl_db,
                 categories=self._config.lifecycle_categories,
                 sports_prefixes=self._config.sports_allowed_prefixes,
+                tracked_events=self._tracked_events_state,
             )
 
             await self._lifecycle_integration.start()
@@ -888,6 +954,10 @@ class V3Coordinator:
         if self._config.single_arb_enabled:
             await self._start_single_arb_system()
 
+        # Start EarlyBirdService (after single_arb so AttentionRouter is available)
+        if self._config.early_bird_enabled and self._tracked_events_state and self._tracked_markets_state:
+            await self._start_early_bird_service()
+
         status_msg = f"System ready with {len(self._config.market_tickers)} markets"
         if self._trading_client_integration:
             status_msg += f" (trading enabled in {self._trading_client_integration._client.mode} mode)"
@@ -908,17 +978,72 @@ class V3Coordinator:
                 orderbook_integration=self._orderbook_integration,
                 trading_client=self._trading_client_integration,
                 health_monitor=self._health_monitor,
+                lifecycle_markets=getattr(self, "_tracked_markets_state", None),
             )
             await self._single_arb_coordinator.start()
 
             # Wire up coordinator to websocket manager for pause/resume commands
             self._websocket_manager.set_single_arb_coordinator(self._single_arb_coordinator)
 
+            # Wire up coordinator to status reporter for tavily budget in trading_state broadcasts
+            if self._status_reporter:
+                self._status_reporter.set_single_arb_coordinator(self._single_arb_coordinator)
+
             logger.info("Single-event arb system started")
 
         except Exception as e:
             logger.error(f"Failed to start single-arb system: {e}")
             self._degraded_subsystems.add("single_arb_system")
+
+    async def _start_early_bird_service(self) -> None:
+        """Start EarlyBirdService for detecting newly activated market opportunities."""
+        try:
+            from ..services.early_bird_service import EarlyBirdService
+
+            # Get attention callback from single_arb AttentionRouter
+            attention_callback = None
+            if self._single_arb_coordinator and self._single_arb_coordinator._attention_router:
+                router = self._single_arb_coordinator._attention_router
+
+                async def _early_bird_attention(**kwargs):
+                    router.on_early_bird_signal(**kwargs)
+
+                attention_callback = _early_bird_attention
+
+            # Wire optional services for news scoring + risk scoring
+            search_service = None
+            health_callback = None
+            if self._single_arb_coordinator:
+                search_service = getattr(self._single_arb_coordinator, '_search_service', None)
+                hs = getattr(self._single_arb_coordinator, '_health_service', None)
+                if hs:
+                    async def _get_drawdown():
+                        return hs.current_drawdown_pct
+                    health_callback = _get_drawdown
+
+            self._early_bird_service = EarlyBirdService(
+                event_bus=self._event_bus,
+                tracked_events=self._tracked_events_state,
+                tracked_markets=self._tracked_markets_state,
+                config=self._config,
+                attention_callback=attention_callback,
+                search_service=search_service,
+                health_callback=health_callback,
+            )
+            await self._early_bird_service.start()
+
+            # Wire into SingleArbCoordinator's ToolContext
+            if self._single_arb_coordinator:
+                from ..single_arb.tools import _ctx as tool_ctx
+                if tool_ctx:
+                    tool_ctx.early_bird_service = self._early_bird_service
+
+            logger.info("EarlyBirdService started")
+
+        except Exception as e:
+            logger.error(f"EarlyBirdService init failed (degraded): {e}")
+            self._early_bird_service = None
+            self._degraded_subsystems.add("early_bird_service")
 
     async def _run_event_loop(self) -> None:
         """Main event loop."""
@@ -985,6 +1110,8 @@ class V3Coordinator:
 
         shutdown_sequence = [
             (self._single_arb_coordinator, "Single Arb Coordinator", lambda c: c.stop()),
+            (self._early_bird_service, "Early Bird Service", lambda c: c.stop()),
+            (self._lifecycle_persistence, "Lifecycle Persistence", lambda c: c.stop()),
             (self._trade_flow_service, "Trade Flow Service", lambda c: c.stop()),
             (self._trades_integration, "Trades Integration", lambda c: c.stop()),
             (self._upcoming_markets_syncer, "Upcoming Markets Syncer", lambda c: c.stop()),
@@ -1065,6 +1192,9 @@ class V3Coordinator:
             ("_event_lifecycle_service", "event_lifecycle_service", "get_stats"),
             ("_trade_flow_service", "trade_flow_service", "get_trade_processing_stats"),
             ("_single_arb_coordinator", "single_arb_coordinator", "get_health_details"),
+            ("_tracked_events_state", "tracked_events_state", "get_stats"),
+            ("_lifecycle_persistence", "lifecycle_persistence", "get_stats"),
+            ("_early_bird_service", "early_bird_service", "get_stats"),
         ]
         for attr, key, method in _OPTIONAL_STATUS_COMPONENTS:
             comp = getattr(self, attr, None)

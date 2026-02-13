@@ -8,7 +8,7 @@ All fields use snake_case matching Kalshi's API convention.
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ---------------------------------------------------------------------------
@@ -31,6 +31,12 @@ class Orderbook(BaseModel):
     """GET /markets/{ticker}/orderbook."""
     yes: List[List[int]] = Field(default_factory=list)  # [[price, qty], ...]
     no: List[List[int]] = Field(default_factory=list)
+
+    @field_validator("yes", "no", mode="before")
+    @classmethod
+    def coerce_none_to_list(cls, v):
+        """Kalshi returns null for empty orderbook sides."""
+        return v if v is not None else []
 
 
 class Market(BaseModel):
@@ -129,8 +135,13 @@ class Fill(BaseModel):
 class Settlement(BaseModel):
     """Single settlement from GET /portfolio/settlements."""
     ticker: str = ""
+    event_ticker: str = ""
     market_result: str = ""
-    revenue: int = 0
+    yes_count: int = 0
+    yes_total_cost: int = 0  # cost basis, cents
+    no_count: int = 0
+    no_total_cost: int = 0   # cost basis, cents
+    revenue: int = 0         # gross payout, cents
     payout: int = 0
     settled_time: Optional[str] = None
 

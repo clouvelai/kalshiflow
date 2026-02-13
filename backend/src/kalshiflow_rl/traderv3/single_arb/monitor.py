@@ -64,6 +64,10 @@ class EventArbMonitor:
         self._last_trade_at: float = 0.0
         self._last_poll_at: float = 0.0
 
+        # Arb opportunity log rate limiting (per event_ticker)
+        self._last_opp_log: Dict[str, float] = {}  # event_ticker -> last_log_time
+        self._last_opp_edge: Dict[str, float] = {}  # event_ticker -> last_logged_edge
+
     async def start(self) -> None:
         """Start monitoring: subscribe to events + start REST poller."""
         if self._running:
@@ -365,14 +369,26 @@ class EventArbMonitor:
             await self._broadcast_event_update(event_ticker)
 
     async def _handle_opportunity(self, opportunity) -> None:
-        """Handle detected arb opportunity."""
+        """Handle detected arb opportunity (rate-limited logging)."""
         self._opportunities_detected += 1
-        logger.info(
-            f"ARB OPPORTUNITY: {opportunity.event_ticker} "
-            f"{opportunity.direction} edge={opportunity.edge_cents:.1f}c "
-            f"(after fees: {opportunity.edge_after_fees:.1f}c, "
-            f"{len(opportunity.legs)} legs)"
-        )
+
+        # Rate-limit logging: only log if (a) first detection, (b) edge changed >10%, or (c) >60s since last log
+        et = opportunity.event_ticker
+        now = time.time()
+        last_log = self._last_opp_log.get(et, 0.0)
+        last_edge = self._last_opp_edge.get(et, 0.0)
+        edge_pct_change = abs(opportunity.edge_cents - last_edge) / max(last_edge, 0.1)
+        should_log = (last_log == 0.0) or (edge_pct_change > 0.10) or (now - last_log > 60.0)
+
+        if should_log:
+            logger.info(
+                f"ARB OPPORTUNITY: {opportunity.event_ticker} "
+                f"{opportunity.direction} edge={opportunity.edge_cents:.1f}c "
+                f"(after fees: {opportunity.edge_after_fees:.1f}c, "
+                f"{len(opportunity.legs)} legs)"
+            )
+            self._last_opp_log[et] = now
+            self._last_opp_edge[et] = opportunity.edge_cents
 
         if self._on_opportunity:
             try:

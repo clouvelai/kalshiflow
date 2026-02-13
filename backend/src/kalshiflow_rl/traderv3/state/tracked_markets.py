@@ -37,7 +37,9 @@ logger = logging.getLogger("kalshiflow_rl.traderv3.state.tracked_markets")
 
 class MarketStatus(Enum):
     """Status of a tracked market in its lifecycle."""
+    PENDING = "pending"         # Created but not yet open for trading
     ACTIVE = "active"           # Trading enabled, subscribed to orderbook
+    DEACTIVATED = "deactivated" # Trading temporarily paused
     DETERMINED = "determined"   # Outcome resolved, unsubscribed from orderbook
     SETTLED = "settled"         # Positions liquidated, P&L finalized
 
@@ -502,7 +504,9 @@ class TrackedMarketsState:
 
         # Count by status
         by_status = {
+            "pending": sum(1 for m in self._markets.values() if m.status == MarketStatus.PENDING),
             "active": sum(1 for m in self._markets.values() if m.status == MarketStatus.ACTIVE),
+            "deactivated": sum(1 for m in self._markets.values() if m.status == MarketStatus.DEACTIVATED),
             "determined": sum(1 for m in self._markets.values() if m.status == MarketStatus.DETERMINED),
             "settled": sum(1 for m in self._markets.values() if m.status == MarketStatus.SETTLED),
         }

@@ -13,6 +13,7 @@ from .upcoming_markets_syncer import UpcomingMarketsSyncer
 from .event_lifecycle_service import EventLifecycleService
 from .listener_bootstrap_service import ListenerBootstrapService
 from .order_cleanup_service import OrderCleanupService
+from .lifecycle_persistence_service import LifecyclePersistenceService
 
 __all__ = [
     "TradingDecisionService",
@@ -22,4 +23,5 @@ __all__ = [
     "EventLifecycleService",
     "ListenerBootstrapService",
     "OrderCleanupService",
+    "LifecyclePersistenceService",
 ]

@@ -118,6 +118,11 @@ class V3WebSocketManager:
         self._tracked_markets_state = tracked_markets_state
         logger.info("TrackedMarketsState set on WebSocket manager")
 
+    def set_tracked_events_state(self, tracked_events_state) -> None:
+        """Set TrackedEventsState for lifecycle timeline broadcasts."""
+        self._tracked_events_state = tracked_events_state
+        logger.info("TrackedEventsState set on WebSocket manager")
+
     def set_trade_flow_service(self, service) -> None:
         self._trade_flow_service = service
         logger.info("TradeFlowService set on WebSocket manager")
@@ -156,6 +161,7 @@ class V3WebSocketManager:
             logger.info("Subscribed to event bus for real-time updates")
 
         self._ping_task = asyncio.create_task(self._ping_clients())
+        self._lifecycle_broadcast_task = asyncio.create_task(self._periodic_lifecycle_broadcast())
 
         logger.info("TRADER V3 WebSocket Manager started")
 
@@ -171,6 +177,14 @@ class V3WebSocketManager:
             self._ping_task.cancel()
             try:
                 await self._ping_task
+            except asyncio.CancelledError:
+                pass
+
+        lifecycle_task = getattr(self, '_lifecycle_broadcast_task', None)
+        if lifecycle_task:
+            lifecycle_task.cancel()
+            try:
+                await lifecycle_task
             except asyncio.CancelledError:
                 pass
 
@@ -379,6 +393,33 @@ class V3WebSocketManager:
                 except Exception as e:
                     logger.debug(f"Could not send discovery_state to {client_id}: {e}")
 
+            # Send lifecycle timeline snapshot so Lifecycle tab renders immediately
+            tracked_events_state = getattr(self, '_tracked_events_state', None)
+            if tracked_events_state and client_id in self._clients:
+                try:
+                    snapshot = tracked_events_state.get_snapshot()
+                    await self._send_to_client(client_id, {
+                        "type": "lifecycle_timeline",
+                        "data": snapshot,
+                    })
+                    logger.debug(f"Sent lifecycle_timeline to {client_id}")
+                except Exception as e:
+                    logger.debug(f"Could not send lifecycle_timeline to {client_id}: {e}")
+
+            # Send gateway config so frontend knows data source provenance
+            if self._single_arb_coordinator and client_id in self._clients:
+                try:
+                    gw_config = getattr(self._single_arb_coordinator, "get_gateway_config", None)
+                    if gw_config:
+                        gw_data = gw_config()
+                        if gw_data:
+                            await self._send_to_client(client_id, {
+                                "type": "gateway_config",
+                                "data": gw_data,
+                            })
+                except Exception as e:
+                    logger.debug(f"Could not send gateway_config to {client_id}: {e}")
+
             # Handle incoming messages
             async for message in websocket.iter_text():
                 await self._handle_client_message(client_id, message)
@@ -586,7 +627,7 @@ class V3WebSocketManager:
         try:
             await client.websocket.send_text(json.dumps(message, cls=DateTimeEncoder))
             self._messages_sent += 1
-        except (RuntimeError, ConnectionError) as e:
+        except (RuntimeError, ConnectionError, WebSocketDisconnect) as e:
             logger.debug(f"Connection error for client {client_id}: {e}")
             await self._disconnect_client(client_id)
         except Exception as e:
@@ -624,6 +665,21 @@ class V3WebSocketManager:
                 break
             except Exception as e:
                 logger.error(f"Error in ping task: {e}")
+
+    async def _periodic_lifecycle_broadcast(self) -> None:
+        """Broadcast lifecycle timeline snapshot to connected clients every 30s."""
+        while self._running:
+            try:
+                await asyncio.sleep(30.0)
+                tracked_events_state = getattr(self, '_tracked_events_state', None)
+                if not tracked_events_state or not self._clients:
+                    continue
+                snapshot = tracked_events_state.get_snapshot()
+                await self.broadcast_message("lifecycle_timeline", snapshot)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.debug(f"Error in lifecycle broadcast: {e}")
 
     # ========== Lifecycle Discovery Mode Methods ==========
 

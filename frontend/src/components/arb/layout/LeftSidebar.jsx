@@ -6,7 +6,7 @@ import PortfolioSummary from '../panels/PortfolioSummary';
 import EventList from '../panels/EventList';
 import { LEFT_SIDEBAR_WIDTH, LEFT_SIDEBAR_COLLAPSED, PANEL_DIVIDER } from '../utils/styleConstants';
 
-const LeftSidebar = memo(({ collapsed, onToggle, tradingState, events, selectedEventTicker, onSelectEvent }) => {
+const LeftSidebar = memo(({ collapsed, onToggle, tradingState, events, selectedEventTicker, onSelectEvent, gatewayConfig }) => {
   return (
     <motion.div
       className={`shrink-0 flex flex-col bg-gray-950/60 ${PANEL_DIVIDER} overflow-hidden`}
@@ -28,7 +28,7 @@ const LeftSidebar = memo(({ collapsed, onToggle, tradingState, events, selectedE
         </div>
       ) : (
         <>
-          <PortfolioSummary tradingState={tradingState} />
+          <PortfolioSummary tradingState={tradingState} gatewayConfig={gatewayConfig} />
           <EventList
             events={events}
             selectedEventTicker={selectedEventTicker}

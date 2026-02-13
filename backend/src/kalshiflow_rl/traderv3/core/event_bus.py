@@ -73,6 +73,7 @@ from .events import (
     OrderFillEvent,
     MarketLifecycleEvent,
     MarketTrackedEvent,
+    MarketActivatedEvent,
     MarketDeterminedEvent,
     TradeFlowMarketUpdateEvent,
     TradeFlowTradeArrivedEvent,
@@ -837,6 +838,52 @@ class EventBus:
 
         self._subscribers[EventType.MARKET_TRACKED].append(callback)
         logger.debug(f"Added market tracked subscriber: {callback.__name__}")
+
+    async def emit_market_activated(
+        self,
+        market_ticker: str,
+        event_ticker: str = "",
+        category: str = "",
+    ) -> bool:
+        """
+        Emit a market activated event (non-blocking).
+
+        Called by EventLifecycleService when a market receives an 'activated'
+        lifecycle event. This is the early bird trigger.
+
+        Args:
+            market_ticker: Market ticker that was activated
+            event_ticker: Parent event ticker
+            category: Market category
+
+        Returns:
+            True if event was queued, False if queue full
+        """
+        if not self._running:
+            return False
+
+        event = MarketActivatedEvent(
+            event_type=EventType.MARKET_ACTIVATED,
+            market_ticker=market_ticker,
+            event_ticker=event_ticker,
+            category=category,
+            timestamp=time.time(),
+        )
+
+        return await self._queue_event(event)
+
+    async def subscribe_to_market_activated(self, callback: Callable) -> None:
+        """
+        Subscribe to market activated events.
+
+        Args:
+            callback: Async function(event: MarketActivatedEvent) to call when market activated
+        """
+        if EventType.MARKET_ACTIVATED not in self._subscribers:
+            self._subscribers[EventType.MARKET_ACTIVATED] = []
+
+        self._subscribers[EventType.MARKET_ACTIVATED].append(callback)
+        logger.debug(f"Added market activated subscriber: {callback.__name__}")
 
     async def subscribe_to_market_determined(self, callback: Callable) -> None:
         """

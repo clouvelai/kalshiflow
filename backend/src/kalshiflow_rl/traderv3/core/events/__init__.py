@@ -31,6 +31,7 @@ from .market_events import (
 from .lifecycle_events import (
     MarketLifecycleEvent,
     MarketTrackedEvent,
+    MarketActivatedEvent,
     MarketDeterminedEvent,
 )
 
@@ -58,6 +59,7 @@ __all__ = [
     # Lifecycle events
     "MarketLifecycleEvent",
     "MarketTrackedEvent",
+    "MarketActivatedEvent",
     "MarketDeterminedEvent",
     # Trade flow events
     "TradeFlowMarketUpdateEvent",

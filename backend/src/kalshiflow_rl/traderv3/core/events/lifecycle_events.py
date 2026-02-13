@@ -80,6 +80,33 @@ class MarketTrackedEvent:
 
 
 @dataclass
+class MarketActivatedEvent:
+    """
+    Event data for when a market opens for trading.
+
+    Emitted by EventLifecycleService when an 'activated' lifecycle event
+    is received. This is the early bird trigger — signals that a market
+    just opened and has a fresh (empty) orderbook.
+
+    Attributes:
+        event_type: Always MARKET_ACTIVATED
+        market_ticker: Market ticker that was activated
+        event_ticker: Parent event ticker
+        category: Market category
+        timestamp: When the event was processed locally
+    """
+    event_type: EventType = EventType.MARKET_ACTIVATED
+    market_ticker: str = ""
+    event_ticker: str = ""
+    category: str = ""
+    timestamp: float = 0.0
+
+    def __post_init__(self):
+        if self.timestamp == 0.0:
+            self.timestamp = time.time()
+
+
+@dataclass
 class MarketDeterminedEvent:
     """
     Event data for when a market outcome is determined.

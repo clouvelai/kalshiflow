@@ -708,9 +708,9 @@ class TestAttentionCallback:
         callback = MagicMock()
         sniper._attention_callback = callback
 
-        # Set VPIN above threshold on a market
+        # Set VPIN above threshold (0.98) on a market
         event = sniper._index.events["EVENT-1"]
-        event.markets["MKT-A"].micro.vpin = 0.95
+        event.markets["MKT-A"].micro.vpin = 0.99
 
         opp = MockArbOpportunity()
         result = await sniper.on_arb_opportunity(opp)
@@ -896,3 +896,83 @@ class TestConfigValidation:
         config = SniperConfig()
         changed, _ = config.update(max_position=15)
         assert config.max_position == 15
+
+
+# ---------------------------------------------------------------------------
+# Balance cache (2s TTL)
+# ---------------------------------------------------------------------------
+
+class TestBalanceCache:
+    @pytest.mark.asyncio
+    async def test_cache_prevents_duplicate_api_call(self):
+        """Two risk gate checks within 2s should only call get_balance once."""
+        sniper = make_sniper(max_capital=50000)
+        sniper._gateway.get_balance = AsyncMock(return_value=MockBalance(balance=100_000))
+
+        opp = MockArbOpportunity()
+
+        # First call - should hit API
+        await sniper._check_risk_gates(opp)
+        assert sniper._gateway.get_balance.call_count == 1
+        assert sniper.state._cached_balance_cents == 100_000
+
+        # Second call immediately - should use cache
+        await sniper._check_risk_gates(opp)
+        assert sniper._gateway.get_balance.call_count == 1  # Still 1!
+
+    @pytest.mark.asyncio
+    async def test_cache_expires_after_ttl(self):
+        """After 2+ seconds, cache should be refreshed from API."""
+        sniper = make_sniper(max_capital=50000)
+        sniper._gateway.get_balance = AsyncMock(return_value=MockBalance(balance=100_000))
+
+        opp = MockArbOpportunity()
+
+        # First call - hits API, populates cache
+        await sniper._check_risk_gates(opp)
+        assert sniper._gateway.get_balance.call_count == 1
+
+        # Artificially expire the cache
+        sniper.state._balance_cached_at = time.time() - 3.0
+
+        # Third call after expiry - should hit API again
+        await sniper._check_risk_gates(opp)
+        assert sniper._gateway.get_balance.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_cache_uses_correct_balance_value(self):
+        """Cached balance should be used for capital calculations."""
+        sniper = make_sniper(max_capital=50000)
+        # Balance allows ~11 contracts (1000 // 90 = 11), limited by liquidity to 10
+        sniper._gateway.get_balance = AsyncMock(return_value=MockBalance(balance=1000))
+
+        opp = MockArbOpportunity()
+
+        # First call
+        rejection, contracts = await sniper._check_risk_gates(opp)
+        assert rejection is None
+        assert contracts == 10  # min(10 liquidity, 11 balance, 555 capital)
+
+        # Update balance mock to a different value (shouldn't matter, cache)
+        sniper._gateway.get_balance = AsyncMock(return_value=MockBalance(balance=200))
+
+        # Second call uses cached 1000, not new 200
+        rejection2, contracts2 = await sniper._check_risk_gates(opp)
+        assert rejection2 is None
+        assert contracts2 == 10  # Still based on cached 1000
+
+    @pytest.mark.asyncio
+    async def test_cache_not_used_when_empty(self):
+        """Fresh state with no cache should always call API."""
+        sniper = make_sniper(max_capital=50000)
+        sniper._gateway.get_balance = AsyncMock(return_value=MockBalance(balance=100_000))
+
+        assert sniper.state._cached_balance_cents is None
+        assert sniper.state._balance_cached_at == 0.0
+
+        opp = MockArbOpportunity()
+        await sniper._check_risk_gates(opp)
+
+        assert sniper._gateway.get_balance.call_count == 1
+        assert sniper.state._cached_balance_cents == 100_000
+        assert sniper.state._balance_cached_at > 0

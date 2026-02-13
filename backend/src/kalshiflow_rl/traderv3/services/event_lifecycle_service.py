@@ -38,6 +38,7 @@ from typing import Dict, Any, List, Optional, TYPE_CHECKING
 from ..config.environment import DEFAULT_LIFECYCLE_CATEGORIES
 from ..core.event_bus import EventBus, EventType, MarketLifecycleEvent
 from ..state.tracked_markets import TrackedMarketsState, TrackedMarket, MarketStatus
+from ..state.tracked_events import TrackedEventsState, TrackedEvent, EventStatus
 from ...data.database import RLDatabase
 
 if TYPE_CHECKING:
@@ -88,6 +89,7 @@ class EventLifecycleService:
         db: RLDatabase,
         categories: Optional[List[str]] = None,
         sports_prefixes: Optional[List[str]] = None,
+        tracked_events: Optional[TrackedEventsState] = None,
     ):
         """
         Initialize event lifecycle service.
@@ -100,9 +102,11 @@ class EventLifecycleService:
             categories: List of allowed categories (default from env)
             sports_prefixes: List of allowed event_ticker prefixes for sports markets
                             (e.g., ["KXNFL"] for NFL only). If empty, all sports allowed.
+            tracked_events: TrackedEventsState for event-level grouping (optional)
         """
         self._event_bus = event_bus
         self._tracked_markets = tracked_markets
+        self._tracked_events = tracked_events
         self._trading_client = trading_client
         self._db = db
         self._categories = [c.strip().lower() for c in (categories or DEFAULT_LIFECYCLE_CATEGORIES)]
@@ -157,13 +161,18 @@ class EventLifecycleService:
         try:
             if lifecycle_type == "created":
                 await self._handle_created(market_ticker, payload)
+            elif lifecycle_type == "activated":
+                await self._handle_activated(market_ticker, payload)
+            elif lifecycle_type == "deactivated":
+                await self._handle_deactivated(market_ticker, payload)
+            elif lifecycle_type == "close_date_updated":
+                await self._handle_close_date_updated(market_ticker, payload)
             elif lifecycle_type == "determined":
                 await self._handle_determined(market_ticker, payload)
             elif lifecycle_type == "settled":
                 await self._handle_settled(market_ticker, payload)
             else:
-                # Store but no action for: activated, deactivated, close_date_updated
-                logger.debug(f"Stored {lifecycle_type} event for {market_ticker} (no action)")
+                logger.debug(f"Stored unknown lifecycle type {lifecycle_type} for {market_ticker}")
 
         except Exception as e:
             logger.error(f"Error handling {lifecycle_type} for {market_ticker}: {e}", exc_info=True)
@@ -239,7 +248,12 @@ class EventLifecycleService:
             logger.debug(f"Rejected {market_ticker}: category '{category}' or sports prefix not allowed")
             return
 
-        # Step 4: Create tracked market and persist
+        # Step 4: Determine initial status based on open_ts
+        open_ts = payload.get("open_ts", 0)
+        close_ts = payload.get("close_ts", 0)
+        now_ts = int(time.time())
+        initial_status = MarketStatus.ACTIVE if (open_ts and open_ts <= now_ts) else MarketStatus.PENDING
+
         tracked_market = TrackedMarket(
             ticker=market_ticker,
             event_ticker=market_info.get("event_ticker", ""),
@@ -249,10 +263,10 @@ class EventLifecycleService:
             no_sub_title=market_info.get("no_sub_title", ""),
             subtitle=market_info.get("subtitle", ""),
             rules_primary=market_info.get("rules_primary", ""),
-            status=MarketStatus.ACTIVE,
-            created_ts=payload.get("open_ts", 0),
-            open_ts=payload.get("open_ts", 0),
-            close_ts=payload.get("close_ts", 0),
+            status=initial_status,
+            created_ts=open_ts,
+            open_ts=open_ts,
+            close_ts=close_ts,
             tracked_at=time.time(),
             market_info=market_info,
             discovery_source="lifecycle_ws",
@@ -270,18 +284,33 @@ class EventLifecycleService:
             logger.warning(f"Failed to add {market_ticker} to state")
             return
 
-        # NOTE: DB persistence removed - tracked markets are in-memory only
-
         self._markets_tracked += 1
 
-        # Step 5: Emit MARKET_TRACKED event
+        # Step 5: Create/update parent TrackedEvent
+        event_ticker = market_info.get("event_ticker", "")
+        if event_ticker and self._tracked_events:
+            tracked_event = TrackedEvent(
+                event_ticker=event_ticker,
+                title=market_info.get("event_title", "") or market_info.get("title", ""),
+                category=category,
+                series_ticker=market_info.get("series_ticker", ""),
+                mutually_exclusive=market_info.get("mutually_exclusive", True),
+                status=EventStatus.ACTIVE if initial_status == MarketStatus.ACTIVE else EventStatus.PENDING,
+                earliest_open_ts=open_ts,
+                latest_close_ts=close_ts,
+                discovery_source="lifecycle_ws",
+            )
+            await self._tracked_events.upsert_event(tracked_event)
+            await self._tracked_events.add_market_to_event(event_ticker, market_ticker)
+
+        # Step 6: Emit MARKET_TRACKED event
         await self._event_bus.emit_market_tracked(
             market_ticker=market_ticker,
             category=tracked_market.category,
             market_info=market_info,
         )
 
-        logger.info(f"Tracked {market_ticker} ({category}) via lifecycle WS")
+        logger.info(f"Tracked {market_ticker} ({category}, status={initial_status.value}) via lifecycle WS")
 
     async def _handle_determined(self, market_ticker: str, payload: Dict[str, Any]) -> None:
         """
@@ -355,9 +384,107 @@ class EventLifecycleService:
             settled_ts=settled_ts,
         )
 
-        # NOTE: DB persistence removed - tracked markets are in-memory only
-
         logger.info(f"Market settled: {market_ticker}")
+
+    async def _handle_activated(self, market_ticker: str, payload: Dict[str, Any]) -> None:
+        """
+        Handle 'activated' lifecycle event — market opened for trading.
+
+        This is the early bird trigger. Processing flow:
+        1. If tracked and PENDING, transition to ACTIVE
+        2. Subscribe to orderbook
+        3. Emit MARKET_ACTIVATED event (early bird trigger)
+        4. Update parent TrackedEvent status
+
+        Args:
+            market_ticker: Market ticker that was activated
+            payload: Event payload
+        """
+        if not self._tracked_markets.is_tracked(market_ticker):
+            logger.debug(f"Ignoring activated for untracked market: {market_ticker}")
+            return
+
+        market = self._tracked_markets.get_market(market_ticker)
+        if not market:
+            return
+
+        # Only transition from PENDING or DEACTIVATED to ACTIVE
+        if market.status not in (MarketStatus.PENDING, MarketStatus.DEACTIVATED):
+            logger.debug(f"Market {market_ticker} already {market.status.value}, skipping activated")
+            return
+
+        # Step 1: Transition to ACTIVE
+        await self._tracked_markets.update_status(market_ticker, MarketStatus.ACTIVE)
+
+        # Step 2: Emit MARKET_ACTIVATED event (early bird trigger)
+        await self._event_bus.emit_market_activated(
+            market_ticker=market_ticker,
+            event_ticker=market.event_ticker,
+            category=market.category,
+        )
+
+        # Step 3: Update parent TrackedEvent status
+        if market.event_ticker and self._tracked_events:
+            await self._tracked_events.update_event_status(
+                market.event_ticker, EventStatus.ACTIVE
+            )
+
+        logger.info(f"Market activated (early bird trigger): {market_ticker}")
+
+    async def _handle_deactivated(self, market_ticker: str, payload: Dict[str, Any]) -> None:
+        """
+        Handle 'deactivated' lifecycle event — trading temporarily paused.
+
+        Processing flow:
+        1. If tracked and ACTIVE, transition to DEACTIVATED
+        2. Unsubscribe from orderbook (save resources)
+
+        Args:
+            market_ticker: Market ticker that was deactivated
+            payload: Event payload
+        """
+        if not self._tracked_markets.is_tracked(market_ticker):
+            logger.debug(f"Ignoring deactivated for untracked market: {market_ticker}")
+            return
+
+        market = self._tracked_markets.get_market(market_ticker)
+        if not market or market.status != MarketStatus.ACTIVE:
+            return
+
+        # Transition to DEACTIVATED
+        await self._tracked_markets.update_status(market_ticker, MarketStatus.DEACTIVATED)
+
+        logger.info(f"Market deactivated: {market_ticker}")
+
+    async def _handle_close_date_updated(self, market_ticker: str, payload: Dict[str, Any]) -> None:
+        """
+        Handle 'close_date_updated' lifecycle event — settlement time modified.
+
+        Processing flow:
+        1. Update close_ts on TrackedMarket
+        2. Update parent TrackedEvent's latest_close_ts
+
+        Args:
+            market_ticker: Market ticker with updated close date
+            payload: Event payload with new close_ts
+        """
+        new_close_ts = payload.get("close_ts", 0)
+        if not new_close_ts:
+            return
+
+        if not self._tracked_markets.is_tracked(market_ticker):
+            logger.debug(f"Ignoring close_date_updated for untracked market: {market_ticker}")
+            return
+
+        # Update market close_ts
+        await self._tracked_markets.update_market(market_ticker, close_ts=new_close_ts)
+
+        # Update parent TrackedEvent's latest_close_ts
+        market = self._tracked_markets.get_market(market_ticker)
+        if market and market.event_ticker and self._tracked_events:
+            await self._tracked_events.update_close_ts(market.event_ticker, new_close_ts)
+
+        logger.info(f"Market {market_ticker} close_ts updated to {new_close_ts}")
 
     async def _fetch_market_info(self, market_ticker: str) -> Optional[Dict[str, Any]]:
         """
@@ -539,10 +666,24 @@ class EventLifecycleService:
             logger.warning(f"Failed to add {market_ticker} to state")
             return False
 
-        # NOTE: DB persistence removed - tracked markets are in-memory only
-
         self._markets_tracked += 1
         self._markets_from_api += 1
+
+        # Step 5b: Create/update parent TrackedEvent
+        if event_ticker and self._tracked_events:
+            tracked_event = TrackedEvent(
+                event_ticker=event_ticker,
+                title=market_info.get("event_title", "") or market_info.get("title", ""),
+                category=category,
+                series_ticker=market_info.get("series_ticker", ""),
+                mutually_exclusive=market_info.get("mutually_exclusive", True),
+                status=EventStatus.ACTIVE,
+                earliest_open_ts=open_ts,
+                latest_close_ts=close_ts,
+                discovery_source="api",
+            )
+            await self._tracked_events.upsert_event(tracked_event)
+            await self._tracked_events.add_market_to_event(event_ticker, market_ticker)
 
         # Step 6: Emit MARKET_TRACKED event
         await self._event_bus.emit_market_tracked(

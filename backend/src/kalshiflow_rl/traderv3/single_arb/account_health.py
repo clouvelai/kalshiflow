@@ -15,9 +15,10 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Callable, Coroutine, Deque, Dict, List, Optional, Set, TYPE_CHECKING
 
-from .models import AccountHealthStatus, SettlementSummary, StalePosition
+from .models import AccountHealthStatus, DecisionAccuracyStats, SettlementSummary, StalePosition
 
 if TYPE_CHECKING:
+    from .decision_ledger import DecisionLedger
     from .index import EventArbIndex
     from .memory.session_store import SessionMemoryStore
     from ..agent_tools.session import TradingSession
@@ -40,7 +41,7 @@ class HealthState:
 
     # Settlements
     known_settlement_ids: Set[str] = field(default_factory=set)
-    recent_settlements: Deque[Dict] = field(default_factory=lambda: deque(maxlen=50))
+    recent_settlements: Deque[Dict] = field(default_factory=lambda: deque(maxlen=100))
     total_settlement_revenue: int = 0
     total_settlement_count: int = 0
 
@@ -82,6 +83,7 @@ class AccountHealthService:
         pause_callback: Optional[Callable[[], None]] = None,
         resume_callback: Optional[Callable[[], None]] = None,
         memory: Optional["SessionMemoryStore"] = None,
+        decision_ledger: Optional["DecisionLedger"] = None,
     ):
         self._gateway = gateway
         self._index = index
@@ -93,6 +95,9 @@ class AccountHealthService:
         self._pause_callback = pause_callback
         self._resume_callback = resume_callback
         self._memory = memory
+        self._decision_ledger = decision_ledger
+        self._cached_accuracy: Optional[DecisionAccuracyStats] = None
+        self._accuracy_last_fetched: float = 0.0
 
         self.state = HealthState()
         self._tick_count = 0
@@ -154,11 +159,12 @@ class AccountHealthService:
             changed = await self._check_stale_orders()
             state_changed = state_changed or changed
 
-        # Every 60 ticks: order group hygiene (auto-fix) + memory retention
+        # Every 60 ticks: order group hygiene (auto-fix) + memory retention + accuracy refresh
         if tick % 60 == 30:
             changed = await self._check_order_groups()
             state_changed = state_changed or changed
             await self._enforce_memory_retention()
+            await self._refresh_decision_accuracy()
 
         # Broadcast if anything changed
         if state_changed and self._broadcast:
@@ -237,29 +243,28 @@ class AccountHealthService:
     async def _check_settlements(self) -> bool:
         """Discover new settlements and track revenue."""
         try:
-            settlements = await self._gateway.get_settlements(limit=50)
+            settlements = await self._gateway.get_settlements(limit=100)
         except Exception as e:
             logger.debug(f"[HEALTH] Settlement check failed: {e}")
             return False
 
         new_count = 0
         for s in settlements:
-            sid = s.settlement_id if hasattr(s, "settlement_id") else getattr(s, "id", str(id(s)))
+            # Composite dedup key (Kalshi API has no settlement_id)
+            sid = f"{s.ticker}:{s.settled_time}"
             if sid in self.state.known_settlement_ids:
                 continue
 
             self.state.known_settlement_ids.add(sid)
-            result = s.result if hasattr(s, "result") else "unknown"
+            result = s.market_result or "unknown"
             revenue = s.revenue if hasattr(s, "revenue") else 0
-            ticker = (
-                getattr(s, "market_ticker", "")
-                or getattr(s, "ticker", "")
-                or getattr(s, "event_ticker", "")
-                or "unknown"
-            )
+            ticker = s.ticker or s.event_ticker or "unknown"
             settled_at = s.settled_time if hasattr(s, "settled_time") else None
 
-            self.state.total_settlement_revenue += revenue
+            # Net P&L = gross payout - cost basis
+            pnl = revenue - s.yes_total_cost - s.no_total_cost
+
+            self.state.total_settlement_revenue += pnl
             self.state.total_settlement_count += 1
             new_count += 1
 
@@ -267,13 +272,14 @@ class AccountHealthService:
                 "ticker": ticker,
                 "result": result,
                 "revenue_cents": revenue,
+                "pnl_cents": pnl,
                 "settled_at": str(settled_at) if settled_at else None,
             }
             self.state.recent_settlements.appendleft(summary)
 
             self._add_alert(
                 "settlement_discovered",
-                f"{ticker} settled {result.upper()}, revenue {'+' if revenue >= 0 else ''}{revenue / 100:.2f}",
+                f"{ticker} settled {result.upper()}, P&L {'+' if pnl >= 0 else ''}{pnl / 100:.2f}",
                 "info",
             )
 
@@ -281,12 +287,12 @@ class AccountHealthService:
             if self._memory:
                 content = (
                     f"SETTLEMENT: {ticker} settled {result.upper()}, "
-                    f"revenue {'+' if revenue >= 0 else ''}{revenue / 100:.2f}"
+                    f"P&L {'+' if pnl >= 0 else ''}{pnl / 100:.2f}"
                 )
                 asyncio.create_task(self._memory.store(
                     content=content,
                     memory_type="settlement_outcome",
-                    metadata={"ticker": ticker, "result": result, "revenue_cents": revenue},
+                    metadata={"ticker": ticker, "result": result, "pnl_cents": pnl},
                 ))
 
         # Also cache positions while we're making API calls
@@ -482,6 +488,7 @@ class AccountHealthService:
             orphaned_groups_cleaned=s.orphaned_groups_cleaned,
             alerts=list(s.alerts)[-10:],
             activity_log=list(s.activity_log)[-20:],
+            decision_accuracy=self._cached_accuracy,
         )
 
     # ------------------------------------------------------------------ #
@@ -499,6 +506,29 @@ class AccountHealthService:
                     logger.info(f"[HEALTH] Memory retention: deactivated {result} old memories")
         except Exception as e:
             logger.debug(f"[HEALTH] Memory retention check failed (non-critical): {e}")
+
+    # ------------------------------------------------------------------ #
+    #  Decision accuracy                                                   #
+    # ------------------------------------------------------------------ #
+
+    async def _refresh_decision_accuracy(self) -> None:
+        """Fetch latest accuracy stats from the decision ledger (async, non-blocking)."""
+        if not self._decision_ledger:
+            return
+        try:
+            stats = await self._decision_ledger.get_accuracy_stats(hours_back=24)
+            self._cached_accuracy = DecisionAccuracyStats(
+                total_decisions=stats.get("total_decisions", 0),
+                decisions_with_outcomes=stats.get("decisions_with_outcomes", 0),
+                direction_accuracy_pct=stats.get("direction_accuracy_pct", 0.0),
+                avg_hypothetical_pnl_cents=stats.get("avg_hypothetical_pnl", 0.0),
+                would_have_filled_pct=stats.get("would_have_filled_pct", 0.0),
+                by_source=stats.get("by_source", {}),
+                by_cycle_mode=stats.get("by_cycle_mode", {}),
+            )
+            self._accuracy_last_fetched = time.time()
+        except Exception as e:
+            logger.debug(f"[HEALTH] Decision accuracy refresh failed: {e}")
 
     # ------------------------------------------------------------------ #
     #  Helpers                                                             #

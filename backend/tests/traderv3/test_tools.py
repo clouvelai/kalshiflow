@@ -130,6 +130,11 @@ class TestToolList:
     def test_13_tools(self):
         assert len(ALL_TOOLS) == 13
 
+    def test_configure_sniper_not_in_all_tools(self):
+        """configure_sniper removed from Captain's tool list to prevent sniper obsession."""
+        tool_names = [t.name for t in ALL_TOOLS]
+        assert "configure_sniper" not in tool_names
+
     def test_all_categorized(self):
         for tool in ALL_TOOLS:
             assert tool.name in TOOL_CATEGORIES, f"Tool {tool.name} not categorized"
@@ -289,9 +294,11 @@ class TestSearchNews:
 
     @pytest.mark.asyncio
     async def test_no_search_service(self):
+        """Without a search service, returns results from memory only (no error)."""
         with inject_v2_context(search=None):
             result = await search_news.ainvoke({"query": "test"})
-        assert "error" in result
+        assert isinstance(result, dict)
+        assert result["count"] == 0  # No memory entries, no Tavily = 0 articles
 
     @pytest.mark.asyncio
     async def test_cache_hit(self):
@@ -326,8 +333,8 @@ class TestSearchNews:
             r1 = await search_news.ainvoke({"query": "test news"})
             assert r1["cached"] is False
 
-            # Artificially age the cache entry
-            cache_key = "test news||week"
+            # Artificially age the cache entry (key includes depth)
+            cache_key = "test news||week|fast"
             ts, data = ctx.news_cache[cache_key]
             ctx.news_cache[cache_key] = (ts - 301, data)
 
@@ -372,6 +379,37 @@ class TestStoreInsight:
             result = await store_insight.ainvoke({"content": "learned something"})
         assert result["status"] == "stored"
         mem.store.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_rejects_toxic_content(self):
+        """store_insight should reject self-imposed restrictions."""
+        mem = _make_mock_memory()
+        toxic_contents = [
+            "NEVER TRADE on events without 80% accuracy",
+            "Pause trading until we recover from losses",
+            "Crisis detected: implement recovery plan",
+            "No directional trades until confidence improves",
+            "Stop trading when VPIN is high",
+        ]
+        for content in toxic_contents:
+            with inject_v2_context(memory=mem):
+                result = await store_insight.ainvoke({"content": content})
+            assert result["status"] == "rejected", f"Should reject: {content}"
+            assert "Self-imposed restrictions" in result["reason"]
+
+    @pytest.mark.asyncio
+    async def test_allows_factual_content(self):
+        """store_insight should allow factual observations."""
+        mem = _make_mock_memory()
+        factual_contents = [
+            "Fed rate decision moved KXFED markets 8c in 15min",
+            "VPIN spiked to 0.95 during sweep on MKT-A",
+            "Complement fair value was 42c, market opened at 38c",
+        ]
+        for content in factual_contents:
+            with inject_v2_context(memory=mem):
+                result = await store_insight.ainvoke({"content": content})
+            assert result["status"] == "stored", f"Should allow: {content}"
 
 
 # ===========================================================================

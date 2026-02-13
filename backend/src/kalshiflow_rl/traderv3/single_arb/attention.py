@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kalshiflow_rl.traderv3.single_arb.attention")
 
 # Scoring thresholds
-SCORE_EMIT_THRESHOLD = 40
+SCORE_EMIT_THRESHOLD = 35
 URGENCY_IMMEDIATE_THRESHOLD = 70
 URGENCY_HIGH_THRESHOLD = 55
 
@@ -47,12 +47,13 @@ WEIGHT_VPIN_SPIKE = 10
 WEIGHT_SWEEP = 10
 WEIGHT_WHALE = 5
 WEIGHT_TIME_PRESSURE = 10
+WEIGHT_EARLY_BIRD = 35
 
 # Edge thresholds (cents)
-EDGE_MIN_CENTS = 2.0           # Below this, no edge signal
-EDGE_HIGH_CENTS = 5.0          # Above this, full weight
-VPIN_ALERT_THRESHOLD = 0.70    # First alert level
-VPIN_CRITICAL_THRESHOLD = 0.85 # Critical level
+EDGE_MIN_CENTS = 0.5           # Below this, no edge signal
+EDGE_HIGH_CENTS = 3.0          # Above this, full weight
+VPIN_ALERT_THRESHOLD = 0.92    # First alert level (high for Kalshi's thin markets)
+VPIN_CRITICAL_THRESHOLD = 0.98 # Critical level (only blocks VPIN=1.0 exactly)
 
 # Debounce
 BATCH_INTERVAL_SECONDS = 5.0
@@ -210,6 +211,55 @@ class AttentionRouter:
 
     def inject_item(self, item: AttentionItem) -> None:
         """Public API for external systems (Sniper, AutoActions) to inject items."""
+        self._emit_item(item)
+
+    def on_early_bird_signal(
+        self,
+        market_ticker: str,
+        event_ticker: str,
+        score: float,
+        strategy: Optional[str] = None,
+        fair_value: Optional[float] = None,
+        score_breakdown: Optional[Dict[str, float]] = None,
+    ) -> None:
+        """Inject an early bird opportunity signal from EarlyBirdService.
+
+        Creates an AttentionItem with urgency="immediate" and category="early_bird".
+        Score is normalized from the EarlyBirdScore (0-100) to the attention scale.
+
+        Args:
+            market_ticker: Newly activated market ticker
+            event_ticker: Parent event ticker
+            score: EarlyBirdScore total (0-100)
+            strategy: Scoring strategy (complement, series, news, captain_decide)
+            fair_value: Estimated fair value in cents (if available)
+            score_breakdown: Optional dict with individual score components
+        """
+        # Normalize: early bird scores 60-100 map to attention weight range
+        normalized = WEIGHT_EARLY_BIRD * min(score / 100.0, 1.0)
+
+        parts = [f"new market activated, strategy={strategy or 'unknown'}"]
+        if fair_value is not None:
+            parts.append(f"fair_value={fair_value:.0f}c")
+
+        data = {
+            "early_bird_score": score,
+            "strategy": strategy,
+            "fair_value": fair_value,
+        }
+        if score_breakdown:
+            data.update(score_breakdown)
+
+        item = AttentionItem(
+            event_ticker=event_ticker,
+            market_ticker=market_ticker,
+            urgency="immediate",
+            category="early_bird",
+            summary=", ".join(parts),
+            score=normalized,
+            data=data,
+            ttl_seconds=300.0,  # 5 min TTL for early bird signals
+        )
         self._emit_item(item)
 
     @property
@@ -400,7 +450,11 @@ class AttentionRouter:
         elif time_score > 0:
             category = "settlement_approaching"
         elif max_vpin >= VPIN_CRITICAL_THRESHOLD:
-            category = "regime_change"
+            # Only fire regime_change if we have capital at risk in this event
+            has_position = any(
+                p.get("event_ticker") == event_ticker for p in self._positions.values()
+            )
+            category = "regime_change" if has_position else "arb_opportunity"
         elif edge_delta > 2.0:
             category = "edge_emergence"
         else:

@@ -305,3 +305,117 @@ class TestConcurrency:
 
         # Should not raise
         await asyncio.gather(store_loop(), recall_loop())
+
+
+# ===========================================================================
+# TestTaskExceptionSuppression (Bug #6)
+# ===========================================================================
+
+
+class TestTaskExceptionSuppression:
+    @pytest.mark.asyncio
+    async def test_done_callback_attached_on_store(self):
+        """Fire-and-forget pgvector tasks should have _suppress_task_exception callback."""
+        mock_vs = MagicMock()
+        mock_vs.store = AsyncMock()
+        store = SessionMemoryStore(vector_store=mock_vs)
+        await store.store("test content", memory_type="learning")
+        # There should be at least one pending task with a done_callback
+        pending = [t for t in store._pending_writes if not t.done()]
+        assert len(pending) >= 0  # may have already completed
+        # Check all tasks (done or not) have the callback registered
+        all_tasks = store._pending_writes
+        assert len(all_tasks) >= 1
+        # Verify the callback is our suppression method
+        for task in all_tasks:
+            callbacks = [cb for cb in task._callbacks if cb is not None]
+            assert any(
+                "suppress" in getattr(cb, "__name__", str(cb)).lower()
+                or "suppress" in str(cb).lower()
+                for cb in callbacks
+            ), f"Expected _suppress_task_exception callback on task, got {callbacks}"
+
+    @pytest.mark.asyncio
+    async def test_done_callback_attached_on_store_chunked(self):
+        """Fire-and-forget pgvector chunked tasks should have _suppress_task_exception callback."""
+        mock_vs = MagicMock()
+        mock_vs.store_chunked = AsyncMock()
+        store = SessionMemoryStore(vector_store=mock_vs)
+        await store.store_chunked("test article", memory_type="news", chunks=None)
+        all_tasks = store._pending_writes
+        assert len(all_tasks) >= 1
+        for task in all_tasks:
+            callbacks = [cb for cb in task._callbacks if cb is not None]
+            assert any(
+                "suppress" in getattr(cb, "__name__", str(cb)).lower()
+                or "suppress" in str(cb).lower()
+                for cb in callbacks
+            )
+
+    @pytest.mark.asyncio
+    async def test_pgvector_exception_handled_gracefully(self):
+        """When pgvector write fails, the inner try/except handles it; callback is a safety net."""
+        mock_vs = MagicMock()
+        mock_vs.store = AsyncMock(side_effect=Exception("DB connection lost"))
+        store = SessionMemoryStore(vector_store=mock_vs)
+        await store.store("test content", memory_type="learning")
+        # Wait for the fire-and-forget task to complete
+        await asyncio.sleep(0.2)
+        # The task should be done — _store_pgvector catches the exception internally,
+        # so task.exception() returns None (the task completed normally).
+        # The done_callback is a safety net for edge cases where the try/except doesn't catch.
+        for task in store._pending_writes:
+            if task.done() and not task.cancelled():
+                # _store_pgvector's try/except means the task itself succeeds
+                exc = task.exception()
+                assert exc is None
+        # Journal entry should still exist despite pgvector failure
+        assert len(store.get_journal()) == 1
+
+    @pytest.mark.asyncio
+    async def test_suppress_callback_handles_uncaught_exception(self):
+        """If a task raises an exception not caught internally, the callback consumes it."""
+        # Simulate a task that raises without internal try/except
+        async def _failing_coro():
+            raise RuntimeError("unexpected failure")
+
+        store = SessionMemoryStore()
+        task = asyncio.create_task(_failing_coro())
+        task.add_done_callback(store._suppress_task_exception)
+        # Wait for task to complete
+        await asyncio.sleep(0.1)
+        assert task.done()
+        # The callback already retrieved the exception, so calling exception() again
+        # returns it (no warning since callback already consumed it)
+        exc = task.exception()
+        assert isinstance(exc, RuntimeError)
+
+    def test_suppress_task_exception_with_cancelled_task(self):
+        """Cancelled tasks should be silently ignored by the callback."""
+        loop = asyncio.new_event_loop()
+        try:
+            async def _cancel_task():
+                task = asyncio.create_task(asyncio.sleep(100))
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                # Should not raise
+                SessionMemoryStore._suppress_task_exception(task)
+            loop.run_until_complete(_cancel_task())
+        finally:
+            loop.close()
+
+    def test_suppress_task_exception_with_successful_task(self):
+        """Successful tasks should be silently ignored by the callback."""
+        loop = asyncio.new_event_loop()
+        try:
+            async def _success_task():
+                task = asyncio.create_task(asyncio.sleep(0))
+                await task
+                # Should not raise
+                SessionMemoryStore._suppress_task_exception(task)
+            loop.run_until_complete(_success_task())
+        finally:
+            loop.close()

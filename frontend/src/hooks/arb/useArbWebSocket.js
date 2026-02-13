@@ -11,6 +11,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
  *   account_health_update, sniper_status, sniper_execution,
  *   attention_snapshot, auto_action_fired,
  *   captain_cycle_start, captain_cycle_complete, captain_config,
+ *   lifecycle_timeline, lifecycle_event_update, lifecycle_market_status,
  *   connection, ping/pong
  */
 
@@ -68,6 +69,13 @@ export const useArbWebSocket = () => {
     lastFetch: null,
     recentEvictions: [],
   });
+  // Gateway config: hybrid mode, data source provenance
+  const [gatewayConfig, setGatewayConfig] = useState(null);
+  // Tavily budget: credits used, limit, searches today
+  const [tavilyBudget, setTavilyBudget] = useState(null);
+  // Lifecycle timeline and tracked events
+  const [lifecycleTimeline, setLifecycleTimeline] = useState([]);
+  const [trackedEvents, setTrackedEvents] = useState(new Map());
 
   const wsRef = useRef(null);
   const reconnectTimeoutRef = useRef(null);
@@ -207,6 +215,9 @@ export const useArbWebSocket = () => {
               event_exposure: data.data.event_exposure || prev?.event_exposure || null,
             };
           });
+          if (data.data.tavily_budget) {
+            setTavilyBudget(data.data.tavily_budget);
+          }
         }
         break;
       }
@@ -237,6 +248,9 @@ export const useArbWebSocket = () => {
             result: data.data.result,
             order_id: data.data.order_id,
             elapsed: data.data.elapsed,
+            mode: data.data.mode,
+            phase: data.data.phase,
+            detail: data.data.detail,
             timestamp: data.data.timestamp || new Date().toISOString(),
           };
           setAgentMessages(prev => [msg, ...prev].slice(0, 200));
@@ -412,6 +426,47 @@ export const useArbWebSocket = () => {
         break;
       }
 
+      case 'lifecycle_timeline': {
+        setLifecycleTimeline(data.data?.timeline || []);
+        if (data.data?.events) {
+          setTrackedEvents(new Map(data.data.events.map(e => [e.event_ticker, e])));
+        }
+        break;
+      }
+
+      case 'lifecycle_event_update': {
+        if (data.data?.event_ticker) {
+          setTrackedEvents(prev => {
+            const next = new Map(prev);
+            next.set(data.data.event_ticker, { ...next.get(data.data.event_ticker), ...data.data });
+            return next;
+          });
+        }
+        break;
+      }
+
+      case 'lifecycle_market_status': {
+        if (data.data?.event_ticker) {
+          setTrackedEvents(prev => {
+            const next = new Map(prev);
+            const eventTicker = data.data.event_ticker;
+            const existing = next.get(eventTicker);
+            if (existing) {
+              next.set(eventTicker, { ...existing, updated_at: Date.now() / 1000 });
+            }
+            return next;
+          });
+        }
+        break;
+      }
+
+      case 'gateway_config': {
+        if (data.data) {
+          setGatewayConfig(data.data);
+        }
+        break;
+      }
+
       case 'sniper_execution': {
         if (data.data) {
           const d = data.data;
@@ -482,6 +537,8 @@ export const useArbWebSocket = () => {
         setAutoActions([]);
         setCaptainMode(null);
         setStartupMessages([]);
+        setLifecycleTimeline([]);
+        setTrackedEvents(new Map());
       };
 
       ws.onmessage = (event) => {
@@ -567,6 +624,10 @@ export const useArbWebSocket = () => {
     captainMode,
     captainTiming,
     discoveryState,
+    gatewayConfig,
+    tavilyBudget,
+    lifecycleTimeline,
+    trackedEvents,
   };
 };
 

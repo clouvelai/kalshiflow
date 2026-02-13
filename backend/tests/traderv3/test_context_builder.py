@@ -71,9 +71,9 @@ class TestComputeRegime:
 
     def test_toxic_when_high_vpin(self):
         event = make_event_meta(n_markets=3)
-        # Set one market's VPIN > 0.85
+        # Set one market's VPIN > 0.98
         first_market = next(iter(event.markets.values()))
-        first_market.micro.vpin = 0.9
+        first_market.micro.vpin = 0.99
         assert _compute_regime(event) == "toxic"
 
     def test_sweep_when_sweep_active(self):
@@ -94,7 +94,7 @@ class TestComputeRegime:
         """VPIN check comes before sweep check."""
         event = make_event_meta(n_markets=3)
         first_market = next(iter(event.markets.values()))
-        first_market.micro.vpin = 0.9
+        first_market.micro.vpin = 0.99
         first_market.micro.sweep_active = True
         assert _compute_regime(event) == "toxic"
 
@@ -486,6 +486,7 @@ class TestBuildReactiveContext:
         portfolio = PortfolioState(balance_cents=50000, balance_dollars=500.0)
         result = builder.build_reactive_context(items, portfolio)
         assert "ACTION:" in result
+        assert "ONLY" in result
 
     def test_shows_relevant_positions(self):
         from kalshiflow_rl.traderv3.single_arb.models import Position
@@ -560,6 +561,24 @@ class TestBuildStrategicContext:
         portfolio = PortfolioState(balance_cents=50000, balance_dollars=500.0)
         result = builder.build_strategic_context(portfolio, [])
         assert "ACTION:" in result
+        assert "Search news" in result
+
+    def test_contains_early_bird_opportunities(self):
+        builder = self._make_builder()
+        portfolio = PortfolioState(balance_cents=50000, balance_dollars=500.0)
+        opportunities = [
+            {"market_ticker": "MKT-NEW", "score": 75.0, "strategy": "complement", "fair_value": 42.0, "age_seconds": 30},
+        ]
+        result = builder.build_strategic_context(portfolio, [], early_bird_opportunities=opportunities)
+        assert "EARLY_BIRD:" in result
+        assert "MKT-NEW" in result
+        assert "complement" in result
+
+    def test_no_early_bird_omits_section(self):
+        builder = self._make_builder()
+        portfolio = PortfolioState(balance_cents=50000, balance_dollars=500.0)
+        result = builder.build_strategic_context(portfolio, [])
+        assert "EARLY_BIRD:" not in result
 
     def test_contains_sniper_stats(self):
         builder = self._make_builder()
@@ -572,6 +591,22 @@ class TestBuildStrategicContext:
         assert "SNIPER:" in result
         assert "5 arbs" in result
         assert "vpin_toxic" in result
+
+    def test_contains_health_when_provided(self):
+        builder = self._make_builder()
+        portfolio = PortfolioState(balance_cents=50000, balance_dollars=500.0)
+        health = {"drawdown_pct": 5.2, "total_realized_pnl_cents": 800, "settlement_count_session": 2}
+        result = builder.build_strategic_context(portfolio, [], health=health)
+        assert "HEALTH:" in result
+        assert "5.2%" in result
+        assert "800c" in result
+        assert "settlements=2" in result
+
+    def test_no_health_omits_section(self):
+        builder = self._make_builder()
+        portfolio = PortfolioState(balance_cents=50000, balance_dollars=500.0)
+        result = builder.build_strategic_context(portfolio, [])
+        assert "HEALTH:" not in result
 
 
 # ===========================================================================
@@ -665,6 +700,26 @@ class TestBuildDeepScanContext:
         portfolio = PortfolioState(balance_cents=50000, balance_dollars=500.0)
         result = builder.build_deep_scan_context(market_state, portfolio)
         assert "ACTION:" in result
+        assert "early bird" in result.lower()
+
+    def test_contains_early_bird_opportunities(self):
+        builder = self._make_builder()
+        market_state = builder.build_market_state()
+        portfolio = PortfolioState(balance_cents=50000, balance_dollars=500.0)
+        opportunities = [
+            {"market_ticker": "MKT-NEW", "score": 80.0, "strategy": "captain_decide", "age_seconds": 45},
+        ]
+        result = builder.build_deep_scan_context(market_state, portfolio, early_bird_opportunities=opportunities)
+        assert "EARLY_BIRD:" in result
+        assert "MKT-NEW" in result
+        assert "captain_decide" in result
+
+    def test_no_early_bird_omits_section(self):
+        builder = self._make_builder()
+        market_state = builder.build_market_state()
+        portfolio = PortfolioState(balance_cents=50000, balance_dollars=500.0)
+        result = builder.build_deep_scan_context(market_state, portfolio)
+        assert "EARLY_BIRD:" not in result
 
     def test_contains_market_movers(self):
         builder = self._make_builder()

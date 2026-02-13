@@ -1468,6 +1468,186 @@ class RLDatabase:
                 logger.error(f"Failed to delete old orderbook signals: {e}")
                 return 0
 
+    # ============================================================
+    # Tracked Events CRUD Operations (Lifecycle Persistence)
+    # ============================================================
+
+    async def upsert_tracked_event(self, event_ticker: str, data: Dict[str, Any]) -> None:
+        """INSERT ON CONFLICT UPDATE tracked_events table."""
+        if not self._pool:
+            return
+        async with self._pool.acquire() as conn:
+            try:
+                market_tickers = data.get("market_tickers", [])
+                if isinstance(market_tickers, list):
+                    market_tickers = json.dumps(market_tickers)
+
+                await conn.execute('''
+                    INSERT INTO tracked_events (
+                        event_ticker, title, category, series_ticker,
+                        mutually_exclusive, status, earliest_open_ts,
+                        latest_close_ts, discovery_source, market_tickers,
+                        updated_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP)
+                    ON CONFLICT (event_ticker) DO UPDATE SET
+                        title = EXCLUDED.title,
+                        category = EXCLUDED.category,
+                        series_ticker = EXCLUDED.series_ticker,
+                        mutually_exclusive = EXCLUDED.mutually_exclusive,
+                        status = EXCLUDED.status,
+                        earliest_open_ts = EXCLUDED.earliest_open_ts,
+                        latest_close_ts = EXCLUDED.latest_close_ts,
+                        discovery_source = EXCLUDED.discovery_source,
+                        market_tickers = EXCLUDED.market_tickers,
+                        updated_at = CURRENT_TIMESTAMP
+                ''',
+                    event_ticker,
+                    data.get("title", ""),
+                    data.get("category", ""),
+                    data.get("series_ticker", ""),
+                    data.get("mutually_exclusive", True),
+                    data.get("status", "pending"),
+                    data.get("earliest_open_ts", 0),
+                    data.get("latest_close_ts", 0),
+                    data.get("discovery_source", "lifecycle_ws"),
+                    market_tickers,
+                )
+            except Exception as e:
+                logger.error(f"Failed to upsert tracked event {event_ticker}: {e}")
+
+    async def upsert_tracked_market_v2(self, ticker: str, data: Dict[str, Any]) -> None:
+        """INSERT ON CONFLICT UPDATE tracked_markets_v2 table."""
+        if not self._pool:
+            return
+        async with self._pool.acquire() as conn:
+            try:
+                market_info = data.get("market_info", {})
+                if isinstance(market_info, dict):
+                    market_info = json.dumps(market_info)
+
+                await conn.execute('''
+                    INSERT INTO tracked_markets_v2 (
+                        ticker, event_ticker, title, category, status,
+                        open_ts, close_ts, determined_ts, settled_ts,
+                        discovery_source, market_info, updated_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, CURRENT_TIMESTAMP)
+                    ON CONFLICT (ticker) DO UPDATE SET
+                        event_ticker = EXCLUDED.event_ticker,
+                        title = EXCLUDED.title,
+                        category = EXCLUDED.category,
+                        status = EXCLUDED.status,
+                        open_ts = EXCLUDED.open_ts,
+                        close_ts = EXCLUDED.close_ts,
+                        determined_ts = EXCLUDED.determined_ts,
+                        settled_ts = EXCLUDED.settled_ts,
+                        discovery_source = EXCLUDED.discovery_source,
+                        market_info = EXCLUDED.market_info,
+                        updated_at = CURRENT_TIMESTAMP
+                ''',
+                    ticker,
+                    data.get("event_ticker", ""),
+                    data.get("title", ""),
+                    data.get("category", ""),
+                    data.get("status", "pending"),
+                    data.get("open_ts", 0),
+                    data.get("close_ts", 0),
+                    data.get("determined_ts"),
+                    data.get("settled_ts"),
+                    data.get("discovery_source", "lifecycle_ws"),
+                    market_info,
+                )
+            except Exception as e:
+                logger.error(f"Failed to upsert tracked market {ticker}: {e}")
+
+    async def get_active_tracked_events(self) -> List[Dict[str, Any]]:
+        """Get all tracked_events where is_active = TRUE."""
+        if not self._pool:
+            return []
+        async with self._pool.acquire() as conn:
+            try:
+                rows = await conn.fetch('''
+                    SELECT event_ticker, title, category, series_ticker,
+                           mutually_exclusive, status, earliest_open_ts,
+                           latest_close_ts, first_seen_at, discovery_source,
+                           market_tickers, updated_at
+                    FROM tracked_events
+                    WHERE is_active = TRUE
+                    ORDER BY earliest_open_ts ASC
+                ''')
+                events = []
+                for row in rows:
+                    event_dict = dict(row)
+                    # Parse JSONB market_tickers
+                    mt = event_dict.get("market_tickers")
+                    if mt and isinstance(mt, str):
+                        try:
+                            event_dict["market_tickers"] = json.loads(mt)
+                        except (json.JSONDecodeError, TypeError):
+                            event_dict["market_tickers"] = []
+                    events.append(event_dict)
+                return events
+            except Exception as e:
+                logger.error(f"Failed to get active tracked events: {e}")
+                return []
+
+    async def get_active_tracked_markets_v2(self) -> List[Dict[str, Any]]:
+        """Get all tracked_markets_v2 where is_active = TRUE."""
+        if not self._pool:
+            return []
+        async with self._pool.acquire() as conn:
+            try:
+                rows = await conn.fetch('''
+                    SELECT ticker, event_ticker, title, category, status,
+                           open_ts, close_ts, determined_ts, settled_ts,
+                           tracked_at, discovery_source, market_info, updated_at
+                    FROM tracked_markets_v2
+                    WHERE is_active = TRUE
+                    ORDER BY open_ts ASC
+                ''')
+                markets = []
+                for row in rows:
+                    market_dict = dict(row)
+                    # Parse JSONB market_info
+                    mi = market_dict.get("market_info")
+                    if mi and isinstance(mi, str):
+                        try:
+                            market_dict["market_info"] = json.loads(mi)
+                        except (json.JSONDecodeError, TypeError):
+                            market_dict["market_info"] = {}
+                    markets.append(market_dict)
+                return markets
+            except Exception as e:
+                logger.error(f"Failed to get active tracked markets v2: {e}")
+                return []
+
+    async def deactivate_tracked_event(self, event_ticker: str) -> None:
+        """Soft-delete: SET is_active = FALSE."""
+        if not self._pool:
+            return
+        async with self._pool.acquire() as conn:
+            try:
+                await conn.execute('''
+                    UPDATE tracked_events
+                    SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP
+                    WHERE event_ticker = $1
+                ''', event_ticker)
+            except Exception as e:
+                logger.error(f"Failed to deactivate tracked event {event_ticker}: {e}")
+
+    async def deactivate_tracked_market_v2(self, ticker: str) -> None:
+        """Soft-delete: SET is_active = FALSE."""
+        if not self._pool:
+            return
+        async with self._pool.acquire() as conn:
+            try:
+                await conn.execute('''
+                    UPDATE tracked_markets_v2
+                    SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP
+                    WHERE ticker = $1
+                ''', ticker)
+            except Exception as e:
+                logger.error(f"Failed to deactivate tracked market {ticker}: {e}")
+
     async def get_orderbook_signal_stats(
         self,
         session_id: Optional[int] = None,

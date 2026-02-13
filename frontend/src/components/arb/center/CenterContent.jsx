@@ -1,16 +1,18 @@
 import React, { memo, useMemo } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { BarChart3, Brain, Layers } from 'lucide-react';
+import { BarChart3, Brain, Layers, Clock } from 'lucide-react';
 import DashboardOverview from './DashboardOverview';
 import EventView from './EventView';
 import AgentPanel from './AgentPanel';
 import StartupProgress from './StartupProgress';
 import DiscoveryPanel from '../panels/discovery/DiscoveryPanel';
+import LifecycleTimelinePanel from '../panels/lifecycle/LifecycleTimelinePanel';
 
 const MAIN_TABS = [
   { id: 'event', label: 'Event', icon: BarChart3 },
   { id: 'agent', label: 'Agent', icon: Brain },
   { id: 'discovery', label: 'Discovery', icon: Layers },
+  { id: 'lifecycle', label: 'Lifecycle', icon: Clock },
 ];
 
 const CenterContent = memo(({
@@ -25,6 +27,8 @@ const CenterContent = memo(({
   attentionItems, attentionStats, autoActions, captainMode, captainTiming,
   // Discovery props
   discoveryState,
+  // Lifecycle props
+  lifecycleTimeline, trackedEvents,
   // Startup props
   connectionStatus, systemState, startupMessages,
 }) => {
@@ -43,6 +47,8 @@ const CenterContent = memo(({
     && connectionStatus === 'connected';
 
   const discoveryCount = discoveryState?.events?.length || 0;
+  const lifecycleCount = lifecycleTimeline?.length || 0;
+  const earlyBirdCount = (attentionItems || []).filter(i => i.category === 'early_bird').length;
 
   return (
     <div className="flex-1 min-w-0 flex flex-col overflow-hidden bg-gray-950/30">
@@ -77,6 +83,17 @@ const CenterContent = memo(({
               {/* Series count badge on Discovery tab */}
               {tab.id === 'discovery' && discoveryCount > 0 && !isActive && (
                 <span className="text-[8px] font-mono text-cyan-400/60 ml-0.5 tabular-nums">{discoveryCount}</span>
+              )}
+              {/* Event count badge on Lifecycle tab */}
+              {tab.id === 'lifecycle' && lifecycleCount > 0 && !isActive && (
+                <span className="text-[8px] font-mono text-emerald-400/60 ml-0.5 tabular-nums">{lifecycleCount}</span>
+              )}
+              {/* Pulsing dot on Lifecycle tab when early bird signals are active */}
+              {tab.id === 'lifecycle' && earlyBirdCount > 0 && !isActive && (
+                <span className="absolute -top-0.5 -right-0.5 flex h-2.5 w-2.5">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-lime-400 opacity-75" />
+                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-lime-500" />
+                </span>
               )}
             </button>
           );
@@ -127,6 +144,21 @@ const CenterContent = memo(({
             <DiscoveryPanel
               discoveryState={discoveryState}
               events={events}
+            />
+          </motion.div>
+        ) : activeMainTab === 'lifecycle' ? (
+          <motion.div
+            key="lifecycle"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.12 }}
+            className="flex-1 min-h-0 overflow-y-auto"
+          >
+            <LifecycleTimelinePanel
+              timeline={lifecycleTimeline}
+              trackedEvents={trackedEvents}
+              attentionItems={attentionItems}
             />
           </motion.div>
         ) : isStartingUp && !event ? (

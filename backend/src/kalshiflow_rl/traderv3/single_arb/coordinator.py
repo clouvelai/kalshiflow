@@ -52,6 +52,7 @@ class SingleArbCoordinator:
         orderbook_integration,
         trading_client=None,
         health_monitor=None,
+        lifecycle_markets=None,
     ):
         self._config = config
         self._event_bus = event_bus
@@ -59,6 +60,7 @@ class SingleArbCoordinator:
         self._orderbook_integration = orderbook_integration
         self._trading_client = trading_client
         self._health_monitor = health_monitor
+        self._lifecycle_markets = lifecycle_markets  # TrackedMarketsState from lifecycle service
 
         self._index: Optional[EventArbIndex] = None
         self._monitor: Optional[EventArbMonitor] = None
@@ -67,6 +69,7 @@ class SingleArbCoordinator:
         self._health_service = None  # AccountHealthService
         self._attention_router = None  # AttentionRouter
         self._auto_actions = None  # AutoActionManager
+        self._market_gateway = None  # Prod gateway for hybrid data mode
 
         self._discovery = None  # SeriesDiscovery
         self._order_group_id: Optional[str] = None
@@ -84,6 +87,18 @@ class SingleArbCoordinator:
 
         # News-price impact tracking
         self._news_impact_task: Optional[asyncio.Task] = None
+
+        # Decision ledger
+        self._decision_ledger = None  # DecisionLedger
+        self._decision_backfill_task: Optional[asyncio.Task] = None
+
+        # News ingestion + article analysis
+        self._news_ingestion = None  # NewsIngestionService
+        self._article_analyzer = None  # ArticleAnalyzer
+
+        # Swing detection + news correlation
+        self._swing_detector = None  # SwingDetector
+        self._swing_news_loop = None  # SwingNewsLoop
 
         # Exchange status monitoring
         self._exchange_active: bool = True
@@ -111,12 +126,40 @@ class SingleArbCoordinator:
             min_edge_cents=min_edge,
         )
 
-        # 2. Discover top-N events by volume
+        # 2. Setup trading client + market data client
         client = self._get_trading_client()
         if not client:
             logger.error("No trading client available for single-arb REST calls")
             return
 
+        # Create market data client (prod gateway in hybrid mode, demo client otherwise)
+        if self._config.hybrid_data_mode:
+            from ..gateway import KalshiGateway, MarketDataAdapter
+
+            self._market_gateway = KalshiGateway(
+                api_url=self._config.prod_api_url,
+                ws_url=self._config.prod_ws_url,
+                subaccount=0,  # Read-only, no trading
+                api_key_id=self._config.prod_api_key_id,
+                private_key_content=self._config.prod_private_key_content,
+            )
+            await self._market_gateway.connect()
+            market_client = MarketDataAdapter(self._market_gateway)
+            logger.info(f"[HYBRID] Prod market gateway connected: {self._config.prod_api_url}")
+        else:
+            self._market_gateway = None
+            market_client = client  # existing demo trading client
+        self._market_client = market_client
+
+        # 2b. Subscribe to MARKET_TRACKED early (before loading events)
+        # This catches any new lifecycle events that arrive during startup
+        try:
+            await self._event_bus.subscribe_to_market_tracked(self._on_market_tracked)
+            logger.info("[LIFECYCLE_BRIDGE] Subscribed to MARKET_TRACKED events")
+        except Exception as e:
+            logger.warning(f"[LIFECYCLE_BRIDGE] Subscription failed: {e}")
+
+        # 2c. Create discovery container (passive — no REST polling, no background loop)
         from .discovery import TopVolumeDiscovery
 
         seed_events = getattr(self._config, "discovery_seed_events", [])
@@ -125,8 +168,8 @@ class SingleArbCoordinator:
 
         self._discovery = TopVolumeDiscovery(
             index=self._index,
-            trading_client=client,
-            event_count=getattr(self._config, "discovery_event_count", 10),
+            trading_client=market_client,
+            event_count=9999,  # No limit — lifecycle controls breadth
             seed_event_tickers=all_seeds,
             max_markets_per_event=getattr(self._config, "discovery_max_markets_per_event", 50),
             refresh_interval=getattr(self._config, "discovery_refresh_interval", 300.0),
@@ -135,13 +178,13 @@ class SingleArbCoordinator:
             broadcast_callback=self._broadcast,
         )
 
-        # Initial discovery pass (blocking - fetches all open events, ranks by volume)
-        loaded_events = await self._discovery.discover()
+        # 2d. Load events from lifecycle (sole event source — no REST discovery polling)
+        loaded_events = await self._catchup_lifecycle_events(market_client)
 
         if loaded_events == 0 and not self._index.events:
-            logger.warning("No events discovered - single-arb system starting with empty index")
+            logger.warning("No events from lifecycle - single-arb system starting with empty index")
 
-        await self._broadcast_startup(f"Discovered {loaded_events} events ({len(self._index.market_tickers)} markets)", 1, 10)
+        await self._broadcast_startup(f"Loaded {loaded_events} events from lifecycle ({len(self._index.market_tickers)} markets)", 1, 10)
 
         # 3. Initialize Tavily search service (sync object creation only)
         if self._config.tavily_enabled and self._config.tavily_api_key:
@@ -173,8 +216,9 @@ class SingleArbCoordinator:
         logger.info("[UNDERSTANDING] Builder created (LLM builds deferred)")
 
         # 5. Subscribe all market tickers to orderbook WS
+        # In hybrid mode, the prod gateway handles all market data — skip legacy integration
         market_tickers = self._index.market_tickers
-        if market_tickers and self._orderbook_integration:
+        if market_tickers and self._orderbook_integration and not self._config.hybrid_data_mode:
             for ticker in market_tickers:
                 try:
                     await self._orderbook_integration.subscribe_market(ticker)
@@ -210,11 +254,90 @@ class SingleArbCoordinator:
 
         await self._broadcast_startup("Captain tools wired", 6, 10)
 
+        # 8b. Create NewsIngestionService + ArticleAnalyzer (optional)
+        if self._search_service and self._config.news_ingestion_enabled:
+            try:
+                from .article_analyzer import ArticleAnalyzer
+                from .news_ingestion import NewsIngestionService
+
+                self._article_analyzer = ArticleAnalyzer()
+
+                # Get session memory from tool context
+                from .tools import get_context
+                ctx = get_context()
+                session_memory = ctx.memory if ctx else None
+
+                if session_memory:
+                    self._news_ingestion = NewsIngestionService(
+                        search_service=self._search_service,
+                        memory_store=session_memory,
+                        index=self._index,
+                        budget_manager=self._tavily_budget,
+                        config={
+                            "enabled": self._config.news_ingestion_enabled,
+                            "max_credits_per_cycle": self._config.news_max_credits_per_cycle,
+                            "extract_top_n": self._config.news_extract_top_n,
+                        },
+                        article_analyzer=self._article_analyzer,
+                    )
+                    logger.info("[NEWS_INGESTION] Service created (will start after background loops)")
+                else:
+                    logger.warning("[NEWS_INGESTION] No session memory available, skipping")
+            except Exception as e:
+                logger.warning(f"[NEWS_INGESTION] Setup failed: {e}")
+
+        # 8c. Create SwingDetector + SwingNewsService + SwingNewsLoop
+        if self._config.swing_detection_enabled and self._search_service:
+            try:
+                from .swing_detector import SwingDetector
+                from .swing_news_service import SwingNewsService, SwingNewsLoop
+                from .tools import get_context
+
+                ctx = get_context()
+                session_memory = ctx.memory if ctx else None
+
+                if session_memory:
+                    self._swing_detector = SwingDetector(
+                        min_change_cents=self._config.swing_min_change_cents,
+                        volume_multiplier=self._config.swing_volume_multiplier,
+                        live_window_seconds=self._config.swing_live_window_seconds,
+                    )
+
+                    swing_news_service = SwingNewsService(
+                        search_service=self._search_service,
+                        memory_store=session_memory,
+                        index=self._index,
+                        budget_manager=self._tavily_budget,
+                        article_analyzer=self._article_analyzer,
+                    )
+
+                    self._swing_news_loop = SwingNewsLoop(
+                        swing_detector=self._swing_detector,
+                        swing_news_service=swing_news_service,
+                        index=self._index,
+                        config=self._config,
+                        candle_fetch_callback=self._fetch_all_candlesticks,
+                    )
+
+                    # Wire swing_detector into ToolContext
+                    if ctx:
+                        ctx.swing_detector = self._swing_detector
+
+                    logger.info(
+                        f"[SWING] SwingDetector + SwingNewsLoop created "
+                        f"(min_change={self._config.swing_min_change_cents}c, "
+                        f"volume_mult={self._config.swing_volume_multiplier}x)"
+                    )
+                else:
+                    logger.warning("[SWING] No session memory available, skipping swing detection")
+            except Exception as e:
+                logger.warning(f"[SWING] Setup failed: {e}")
+
         # 9. Create monitor
         self._monitor = EventArbMonitor(
             index=self._index,
             event_bus=self._event_bus,
-            trading_client=client,
+            trading_client=market_client,
             config=self._config,
             broadcast_callback=self._broadcast,
             opportunity_callback=self._on_opportunity,
@@ -260,6 +383,42 @@ class SingleArbCoordinator:
             if tool_ctx:
                 tool_ctx.auto_actions = self._auto_actions
 
+            # Wire SwingDetector to EventBus for live BBO updates
+            if self._swing_detector:
+                from ..core.events.types import EventType
+
+                async def _on_bbo_for_swing(market_ticker: str, metadata: dict) -> None:
+                    yes_mid = metadata.get("yes_mid")
+                    if yes_mid is None:
+                        return
+                    event_ticker = self._index.get_event_for_ticker(market_ticker)
+                    if not event_ticker:
+                        return
+                    event = self._index.events.get(event_ticker)
+                    market = event.markets.get(market_ticker) if event else None
+                    title = market.title if market and market.title else market_ticker
+
+                    swing = self._swing_detector.on_bbo_update(
+                        event_ticker=event_ticker,
+                        market_ticker=market_ticker,
+                        market_title=title,
+                        yes_mid=yes_mid,
+                    )
+                    if swing and self._attention_router:
+                        from .attention import AttentionItem
+                        score = min(95, 65 + swing.change_cents * 3)
+                        self._attention_router.inject_item(AttentionItem(
+                            event_ticker=event_ticker,
+                            signal_type="live_swing",
+                            score=score,
+                            reason=f"{swing.direction} {swing.change_cents:.0f}c swing on {market_ticker}",
+                            metadata={"swing_source": "live", "change_cents": swing.change_cents},
+                        ))
+
+                self._event_bus.subscribe(EventType.ORDERBOOK_SNAPSHOT, _on_bbo_for_swing)
+                self._event_bus.subscribe(EventType.TICKER_UPDATE, _on_bbo_for_swing)
+                logger.info("[SWING] SwingDetector wired to EventBus (live BBO tracking)")
+
             logger.info("[ATTENTION] AttentionRouter + AutoActionManager wired")
         except Exception as e:
             logger.warning(f"[ATTENTION] AttentionRouter setup failed, Captain will use legacy mode: {e}")
@@ -286,6 +445,19 @@ class SingleArbCoordinator:
         if not is_exchange_active:
             logger.warning(f"[SINGLE_ARB] Exchange not active: {exchange_error}")
             logger.warning("[SINGLE_ARB] Captain will NOT start until exchange is available")
+
+        # 10b. Clear stale FAISS session memory for a fresh start
+        try:
+            from .tools import get_context
+            ctx = get_context()
+            if ctx and ctx.memory:
+                ctx.memory._faiss_store = None
+                ctx.memory._faiss_docs = []
+                ctx.memory._faiss_ready = False
+                ctx.memory._journal.clear()
+                logger.info("[CAPTAIN] Cleared session memory (FAISS + journal) for fresh start")
+        except Exception as e:
+            logger.debug(f"[CAPTAIN] Session memory clear failed: {e}")
 
         # 11. Create and start Captain (if enabled AND exchange is active)
         captain_enabled = getattr(self._config, "single_arb_captain_enabled", True)
@@ -335,16 +507,25 @@ class SingleArbCoordinator:
         self._exchange_monitor_task = asyncio.create_task(self._exchange_monitor_loop())
         self._order_tracker_task = asyncio.create_task(self._order_tracker_loop())
         self._news_impact_task = asyncio.create_task(self._news_impact_tracker_loop())
+        self._decision_backfill_task = asyncio.create_task(self._decision_backfill_loop())
 
-        # Start discovery background refresh (periodic re-scan for new events)
-        if self._discovery:
-            await self._discovery.start()
+        # Discovery is passive — lifecycle is the sole event source via MARKET_TRACKED
+        # No background REST polling (discovery.start() not called)
         if self._health_service:
             await self._health_service.start()
             logger.info("[HEALTH] AccountHealthService background loop started")
+        if self._news_ingestion:
+            await self._news_ingestion.start()
+            logger.info("[NEWS_INGESTION] Background news polling started")
+        if self._swing_news_loop:
+            await self._swing_news_loop.start()
+            logger.info("[SWING] SwingNewsLoop background service started")
 
         # 14. Broadcast initial snapshot
         await self._broadcast_snapshot()
+
+        # 15. Broadcast gateway config (hybrid mode awareness for frontend)
+        await self._broadcast_gateway_config()
 
         # Register with health monitor
         if self._health_monitor:
@@ -366,7 +547,8 @@ class SingleArbCoordinator:
 
         # Cancel all background tasks
         for attr in ("_order_tracker_task", "_exchange_monitor_task",
-                      "_news_impact_task", "_deferred_init_task"):
+                      "_news_impact_task", "_deferred_init_task",
+                      "_decision_backfill_task"):
             task = getattr(self, attr, None)
             if task:
                 task.cancel()
@@ -385,6 +567,10 @@ class SingleArbCoordinator:
         except Exception as e:
             logger.debug(f"Memory flush during shutdown: {e}")
 
+        if self._swing_news_loop:
+            await self._swing_news_loop.stop()
+        if self._news_ingestion:
+            await self._news_ingestion.stop()
         if self._discovery:
             await self._discovery.stop()
         if self._attention_router:
@@ -398,11 +584,18 @@ class SingleArbCoordinator:
         if self._monitor:
             await self._monitor.stop()
 
-        # Disconnect gateway if present
+        # Disconnect gateways
+        if getattr(self, "_market_gateway", None):
+            try:
+                await self._market_gateway.disconnect()
+                logger.info("[GATEWAY] Prod market gateway disconnected")
+            except Exception as e:
+                logger.debug(f"Prod gateway disconnect error: {e}")
+
         if getattr(self, "_gateway", None):
             try:
                 await self._gateway.disconnect()
-                logger.info("[GATEWAY] KalshiGateway disconnected")
+                logger.info("[GATEWAY] Demo KalshiGateway disconnected")
             except Exception as e:
                 logger.debug(f"Gateway disconnect error: {e}")
 
@@ -432,6 +625,118 @@ class SingleArbCoordinator:
         return None
 
     # ------------------------------------------------------------------ #
+    #  Lifecycle bridge: load lifecycle-discovered events into arb index  #
+    # ------------------------------------------------------------------ #
+
+    async def _catchup_lifecycle_events(self, market_client) -> int:
+        """Load events already discovered by lifecycle into EventArbIndex.
+
+        This is the sole event source — replaces REST discovery polling.
+        Reads unique event_tickers from TrackedMarketsState and loads each
+        into the index via REST (for full event structure with markets).
+
+        Returns:
+            Number of events loaded.
+        """
+        if not self._lifecycle_markets:
+            logger.warning("[LIFECYCLE_BRIDGE] No lifecycle markets available, falling back to REST discovery")
+            return await self._discovery.discover()
+
+        # Get unique event_tickers from lifecycle's tracked markets
+        events_by_ticker = self._lifecycle_markets.get_markets_by_event()
+        event_tickers = [et for et in events_by_ticker.keys() if et and et != "unknown"]
+
+        if not event_tickers:
+            logger.warning("[LIFECYCLE_BRIDGE] Lifecycle has no tracked events yet")
+            return 0
+
+        logger.info(f"[LIFECYCLE_BRIDGE] Catching up {len(event_tickers)} events from lifecycle...")
+
+        loaded = 0
+        skipped_size = 0
+        errors = 0
+        max_markets = getattr(self._config, "discovery_max_markets_per_event", 50)
+
+        for event_ticker in event_tickers:
+            if event_ticker in self._index.events:
+                loaded += 1  # Already loaded
+                continue
+
+            try:
+                meta = await self._index.load_event(event_ticker, market_client)
+                if not meta:
+                    errors += 1
+                    continue
+
+                if len(meta.markets) > max_markets:
+                    self._index._events.pop(event_ticker, None)
+                    for t in list(meta.markets.keys()):
+                        self._index._ticker_to_event.pop(t, None)
+                    skipped_size += 1
+                    logger.debug(f"[LIFECYCLE_BRIDGE] Skipped {event_ticker}: {len(meta.markets)} markets > {max_markets}")
+                    continue
+
+                # Track in discovery container for stats/snapshots
+                if self._discovery:
+                    self._discovery.add_external_event(event_ticker)
+
+                loaded += 1
+                logger.debug(f"[LIFECYCLE_BRIDGE] Loaded {event_ticker}: {meta.title} ({len(meta.markets)} mkts)")
+
+            except Exception as e:
+                errors += 1
+                logger.warning(f"[LIFECYCLE_BRIDGE] Error loading {event_ticker}: {e}")
+
+            # Rate limit protection (Kalshi 10 req/s)
+            if loaded % 8 == 0 and loaded > 0:
+                await asyncio.sleep(0.5)
+
+        logger.info(
+            f"[LIFECYCLE_BRIDGE] Catch-up complete: {loaded} events loaded, "
+            f"{skipped_size} skipped (too large), {errors} errors "
+            f"({len(self._index.market_tickers)} total markets)"
+        )
+
+        return loaded
+
+    async def _on_market_tracked(self, event) -> None:
+        """Bridge lifecycle-discovered events into EventArbIndex."""
+        market_info = event.market_info or {}
+        event_ticker = market_info.get("event_ticker", "")
+        if not event_ticker or event_ticker in self._index.events:
+            return
+        # Debounce: schedule deferred load (let sibling markets arrive)
+        asyncio.create_task(self._load_lifecycle_event(event_ticker))
+
+    async def _load_lifecycle_event(self, event_ticker: str) -> None:
+        """Load a lifecycle event into the arb index after brief debounce."""
+        await asyncio.sleep(3.0)  # Let sibling markets arrive
+        if event_ticker in self._index.events:
+            return
+        try:
+            client = getattr(self, "_market_client", None) or self._get_trading_client()
+            if not client:
+                return
+            meta = await self._index.load_event(event_ticker, client)
+            if not meta:
+                return
+            if len(meta.markets) > 50:  # Skip oversized
+                self._index._events.pop(event_ticker, None)
+                return
+            if self._discovery:
+                self._discovery.add_external_event(event_ticker)
+            new_tickers = list(meta.markets.keys())
+            if new_tickers:
+                await self._subscribe_new_markets(new_tickers)
+            await self._broadcast_snapshot()
+            logger.info(
+                f"[LIFECYCLE_BRIDGE] Loaded {event_ticker}: {meta.title} "
+                f"({len(meta.markets)} mkts)"
+            )
+        except Exception as e:
+            logger.warning(f"[LIFECYCLE_BRIDGE] Error loading {event_ticker}: {e}")
+
+    # ------------------------------------------------------------------ #
     #  Discovery: subscribe new markets to WS channels                    #
     # ------------------------------------------------------------------ #
 
@@ -445,16 +750,18 @@ class SingleArbCoordinator:
             return
 
         # Subscribe to orderbook integration (V3 event bus)
-        if self._orderbook_integration:
+        # In hybrid mode, the prod gateway handles all market data — skip legacy integration
+        if self._orderbook_integration and not self._config.hybrid_data_mode:
             for ticker in market_tickers:
                 try:
                     await self._orderbook_integration.subscribe_market(ticker)
                 except Exception as e:
                     logger.warning(f"[DISCOVERY] Failed to subscribe {ticker} to orderbook: {e}")
 
-        # Subscribe to gateway WS channels
-        if getattr(self, "_gateway", None):
-            ws_mux = self._gateway.get_ws()
+        # Subscribe to gateway WS channels (prod in hybrid mode, demo otherwise)
+        ws_gateway = getattr(self, "_market_gateway", None) or getattr(self, "_gateway", None)
+        if ws_gateway:
+            ws_mux = ws_gateway.get_ws()
             for channel in ("orderbook_delta", "ticker", "trade"):
                 try:
                     await ws_mux.subscribe_tickers(channel, market_tickers)
@@ -464,7 +771,8 @@ class SingleArbCoordinator:
         logger.info(f"[DISCOVERY] Subscribed {len(market_tickers)} new markets to WS channels")
 
         # Prefetch orderbooks via REST so index has data immediately
-        client = self._get_trading_client()
+        # Use market_client (prod adapter in hybrid mode) for accurate data
+        client = getattr(self, "_market_client", None) or self._get_trading_client()
         if client and self._index:
             prefetched = 0
             for ticker in market_tickers:
@@ -501,15 +809,16 @@ class SingleArbCoordinator:
         if not market_tickers:
             return
 
-        if self._orderbook_integration:
+        if self._orderbook_integration and not self._config.hybrid_data_mode:
             for ticker in market_tickers:
                 try:
                     await self._orderbook_integration.unsubscribe_market(ticker)
                 except Exception as e:
                     logger.warning(f"[DISCOVERY] Failed to unsubscribe {ticker} from orderbook: {e}")
 
-        if getattr(self, "_gateway", None):
-            ws_mux = self._gateway.get_ws()
+        ws_gateway = getattr(self, "_market_gateway", None) or getattr(self, "_gateway", None)
+        if ws_gateway:
+            ws_mux = ws_gateway.get_ws()
             for channel in ("orderbook_delta", "ticker", "trade"):
                 try:
                     await ws_mux.unsubscribe_tickers(channel, market_tickers)
@@ -544,6 +853,10 @@ class SingleArbCoordinator:
 
         ctx = get_context()
         if not ctx:
+            logger.warning(
+                f"[SNIPER:REGISTER] ToolContext not ready, order {order_id[:8]}... "
+                f"will not be tracked (ticker={ticker})"
+            )
             return
 
         ctx.captain_order_ids.add(order_id)
@@ -559,6 +872,16 @@ class SingleArbCoordinator:
             "status": "placed",
             "source": "sniper",
         }
+
+        # Record to decision ledger (fire-and-forget)
+        if self._decision_ledger:
+            event_ticker = self._index.get_event_for_ticker(ticker) if self._index else None
+            asyncio.create_task(self._decision_ledger.record_decision(
+                order_id=order_id, source="sniper",
+                event_ticker=event_ticker, market_ticker=ticker,
+                side=side, action=action, contracts=contracts,
+                limit_price_cents=price_cents,
+            ))
 
     # ------------------------------------------------------------------ #
     #  Exchange status monitoring                                         #
@@ -926,6 +1249,30 @@ class SingleArbCoordinator:
             logger.info(f"[SNIPER:CAPITAL_RELEASE] Released {released}c from terminal orders")
 
     # ------------------------------------------------------------------ #
+    #  Decision ledger backfill                                           #
+    # ------------------------------------------------------------------ #
+
+    async def _decision_backfill_loop(self) -> None:
+        """Background loop that backfills decision outcomes every 60 seconds."""
+        await self._system_ready.wait()
+        logger.info("[DECISION_LEDGER] Backfill loop started (60s interval)")
+
+        while self._running:
+            try:
+                await asyncio.sleep(60)
+                if not self._running:
+                    break
+                if self._decision_ledger:
+                    await self._decision_ledger.backfill_outcomes(self._tracked_orders)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning(f"[DECISION_LEDGER] Backfill loop error: {e}")
+                await asyncio.sleep(10)
+
+        logger.info("[DECISION_LEDGER] Backfill loop stopped")
+
+    # ------------------------------------------------------------------ #
     #  News-price impact tracking                                         #
     # ------------------------------------------------------------------ #
 
@@ -1190,11 +1537,14 @@ class SingleArbCoordinator:
                 pass
 
     async def _fetch_all_candlesticks(self) -> None:
-        """Fetch 7-day hourly candlesticks for all loaded events."""
+        """Fetch 7-day hourly candlesticks for all loaded events.
+
+        Uses market_client (prod in hybrid mode) for real volume data.
+        """
         if not self._index:
             return
 
-        client = self._get_trading_client()
+        client = getattr(self, "_market_client", None) or self._get_trading_client()
         if not client:
             logger.warning("[CANDLESTICKS] No trading client for candlestick fetch")
             return
@@ -1242,18 +1592,23 @@ class SingleArbCoordinator:
     # ------------------------------------------------------------------ #
 
     async def _setup_gateway(self, client, order_ttl: int) -> None:
-        """Create KalshiGateway, EventBridge, TradingSession, Sniper, and subscribe WS channels."""
+        """Create KalshiGateway, EventBridge, TradingSession, Sniper, and subscribe WS channels.
+
+        In hybrid data mode, two EventBridges are created:
+        - Market data (orderbook, ticker, trade) from the prod gateway WS
+        - Portfolio events (fill, market_positions) from the demo gateway WS
+        """
         from ..gateway import KalshiGateway, GatewayEventBridge
         from ..agent_tools import TradingSession
 
-        # Create gateway (auth handled internally by GatewayAuth)
+        # Create demo gateway (always — handles trading + portfolio events)
         self._gateway = KalshiGateway(
             api_url=self._config.api_url,
             ws_url=self._config.ws_url,
             subaccount=self._config.subaccount,
         )
         await self._gateway.connect()
-        logger.info(f"[GATEWAY] KalshiGateway connected (subaccount #{self._config.subaccount})")
+        logger.info(f"[GATEWAY] Demo KalshiGateway connected (subaccount #{self._config.subaccount})")
 
         # Validate subaccount works before proceeding
         if self._config.subaccount > 0:
@@ -1265,13 +1620,35 @@ class SingleArbCoordinator:
                 raise
 
         # Bridge gateway WS events -> EventBus
-        self._event_bridge = GatewayEventBridge(
-            event_bus=self._event_bus,
-            ws=self._gateway.get_ws(),
-            subaccount=self._config.subaccount,
-        )
-        self._event_bridge.wire()
-        logger.info("[GATEWAY] EventBridge wired to EventBus")
+        if self._market_gateway:
+            # HYBRID MODE: split market data (prod) and portfolio events (demo)
+            market_bridge = GatewayEventBridge(
+                event_bus=self._event_bus,
+                ws=self._market_gateway.get_ws(),
+                channels=["orderbook_delta", "ticker", "trade"],
+            )
+            market_bridge.wire()
+
+            trading_bridge = GatewayEventBridge(
+                event_bus=self._event_bus,
+                ws=self._gateway.get_ws(),
+                subaccount=self._config.subaccount,
+                channels=["fill", "market_positions"],
+            )
+            trading_bridge.wire()
+
+            self._event_bridge = market_bridge  # Primary bridge for stats
+            self._trading_bridge = trading_bridge
+            logger.info("[GATEWAY] Hybrid EventBridges wired (prod=market, demo=portfolio)")
+        else:
+            # Single bridge (existing behavior)
+            self._event_bridge = GatewayEventBridge(
+                event_bus=self._event_bus,
+                ws=self._gateway.get_ws(),
+                subaccount=self._config.subaccount,
+            )
+            self._event_bridge.wire()
+            logger.info("[GATEWAY] EventBridge wired to EventBus")
 
         # Create shared trading session
         self._trading_session = TradingSession(
@@ -1279,7 +1656,7 @@ class SingleArbCoordinator:
             order_ttl=order_ttl,
         )
 
-        # Create Sniper execution layer (if enabled)
+        # Create Sniper execution layer (if enabled) — always uses demo gateway
         if self._config.sniper_enabled:
             from .sniper import Sniper, SniperConfig
             sniper_config = SniperConfig(
@@ -1291,6 +1668,7 @@ class SingleArbCoordinator:
                 arb_min_edge=self._config.sniper_arb_min_edge,
                 order_ttl=getattr(self._config, "sniper_order_ttl", 30),
                 leg_timeout=getattr(self._config, "sniper_leg_timeout", 5.0),
+                vpin_reject_threshold=getattr(self._config, "sniper_vpin_reject_threshold", 0.98),
             )
             self._sniper = Sniper(
                 gateway=self._gateway,
@@ -1305,15 +1683,17 @@ class SingleArbCoordinator:
             await self._sniper.start()
             logger.info("[GATEWAY] Sniper execution layer initialized")
 
-        # Subscribe gateway WS channels for single-arb market tickers
+        # Subscribe WS channels for single-arb market tickers
         market_tickers = list(self._index.market_tickers) if self._index else []
         if market_tickers:
-            ws_mux = self._gateway.get_ws()
+            # In hybrid mode, subscribe market channels on PROD gateway
+            ws_mux = self._market_gateway.get_ws() if self._market_gateway else self._gateway.get_ws()
             for channel in ("orderbook_delta", "ticker", "trade"):
                 await ws_mux.subscribe_tickers(channel, market_tickers)
             logger.info(
                 f"[GATEWAY] Subscribed {len(market_tickers)} tickers to "
                 f"orderbook_delta+ticker+trade channels"
+                f"{' (prod)' if self._market_gateway else ''}"
             )
 
         logger.info("[GATEWAY] Gateway layer wired")
@@ -1324,6 +1704,7 @@ class SingleArbCoordinator:
         from .memory.session_store import SessionMemoryStore
         from .memory.vector_store import VectorMemoryService
         from .context_builder import ContextBuilder
+        from .decision_ledger import DecisionLedger
 
         # Build pgvector persistent store (graceful degradation if DB unavailable)
         vector_store = None
@@ -1346,6 +1727,9 @@ class SingleArbCoordinator:
         # Create AccountHealthService (background hygiene, no LLM)
         from .account_health import AccountHealthService
         max_drawdown = getattr(self._config, "max_drawdown_pct", 25.0)
+        # Create DecisionLedger for order quality tracking
+        self._decision_ledger = DecisionLedger(index=self._index, memory_store=session_memory)
+
         self._health_service = AccountHealthService(
             gateway=self._gateway,
             index=self._index,
@@ -1356,6 +1740,7 @@ class SingleArbCoordinator:
             pause_callback=self.pause_captain,
             resume_callback=self.resume_captain,
             memory=session_memory,
+            decision_ledger=self._decision_ledger,
         )
 
         ctx = ToolContext(
@@ -1369,6 +1754,7 @@ class SingleArbCoordinator:
             context_builder=ctx_builder,
             broadcast=self._broadcast,
             health_service=self._health_service,
+            decision_ledger=self._decision_ledger,
         )
         set_context(ctx)
         logger.info("[TOOLS] ToolContext wired (12 tools, single agent)")
@@ -1419,6 +1805,34 @@ class SingleArbCoordinator:
                 "data": {"orders": list(self._tracked_orders.values())},
             })
 
+    def get_gateway_config(self) -> dict:
+        """Return gateway source configuration for frontend display."""
+        hybrid = self._config.hybrid_data_mode
+        if hybrid:
+            prod_url = self._config.prod_api_url
+            prod_host = prod_url.replace("https://", "").replace("http://", "").split("/")[0]
+        else:
+            prod_host = None
+
+        demo_url = self._config.api_url or ""
+        demo_host = demo_url.replace("https://", "").replace("http://", "").split("/")[0] if demo_url else "demo-api.kalshi.co"
+
+        return {
+            "hybrid_mode": hybrid,
+            "market_data_source": "prod" if hybrid else "demo",
+            "market_data_host": prod_host or demo_host,
+            "trading_source": "demo",
+            "trading_host": demo_host,
+            "subaccount": self._config.subaccount,
+        }
+
+    async def _broadcast_gateway_config(self) -> None:
+        """Broadcast gateway source configuration so frontend can show data provenance."""
+        await self._broadcast({
+            "type": "gateway_config",
+            "data": self.get_gateway_config(),
+        })
+
     # ------------------------------------------------------------------ #
     #  Opportunity + agent event handlers                                 #
     # ------------------------------------------------------------------ #
@@ -1466,6 +1880,12 @@ class SingleArbCoordinator:
     # ------------------------------------------------------------------ #
     #  Snapshot + health check interface                                  #
     # ------------------------------------------------------------------ #
+
+    def get_tavily_budget_status(self) -> Optional[Dict]:
+        """Get Tavily budget status for inclusion in trading_state WS broadcasts."""
+        if self._tavily_budget:
+            return self._tavily_budget.get_budget_status()
+        return None
 
     def get_snapshot(self) -> Optional[Dict]:
         """Get full event arb snapshot for on-connect delivery."""
@@ -1516,5 +1936,13 @@ class SingleArbCoordinator:
 
         if self._health_service:
             details["account_health"] = self._health_service.get_health_status().model_dump()
+
+        if self._news_ingestion:
+            details["news_ingestion"] = self._news_ingestion.get_stats()
+
+        if self._swing_news_loop:
+            details["swing_detection"] = self._swing_news_loop.get_stats()
+        elif self._swing_detector:
+            details["swing_detection"] = self._swing_detector.stats
 
         return details

@@ -45,10 +45,12 @@ class MockBalance:
 
 @dataclass
 class MockSettlement:
-    settlement_id: str = "settle-1"
-    result: str = "yes"
+    ticker: str = "MKT-A"
+    event_ticker: str = ""
+    market_result: str = "yes"
     revenue: int = 450
-    market_ticker: str = "MKT-A"
+    yes_total_cost: int = 0
+    no_total_cost: int = 0
     settled_time: str = "2026-01-01T00:00:00Z"
 
 
@@ -143,7 +145,7 @@ class TestHealthState:
     def test_deque_maxlen(self):
         s = HealthState()
         assert s.balance_history.maxlen == 120
-        assert s.recent_settlements.maxlen == 50
+        assert s.recent_settlements.maxlen == 100
         assert s.alerts.maxlen == 100
         assert s.activity_log.maxlen == 100
 
@@ -219,20 +221,22 @@ class TestBalanceCheck:
 class TestSettlementCheck:
     @pytest.mark.asyncio
     async def test_new_settlement_discovered(self):
-        settlements = [MockSettlement(settlement_id="s1", revenue=450, market_ticker="MKT-A")]
+        settlements = [MockSettlement(ticker="MKT-A", revenue=450, yes_total_cost=200)]
         svc = _make_service(gateway=_make_gateway(settlements=settlements))
         changed = await svc._check_settlements()
         assert changed is True
         assert svc.state.total_settlement_count == 1
-        assert svc.state.total_settlement_revenue == 450
+        # Net P&L = 450 - 200 - 0 = 250
+        assert svc.state.total_settlement_revenue == 250
         assert len(svc.state.recent_settlements) == 1
+        assert svc.state.recent_settlements[0]["pnl_cents"] == 250
 
     @pytest.mark.asyncio
     async def test_settlement_dedup(self):
-        settlements = [MockSettlement(settlement_id="s1")]
+        settlements = [MockSettlement(ticker="MKT-A")]
         svc = _make_service(gateway=_make_gateway(settlements=settlements))
         await svc._check_settlements()
-        # Second call — same settlement, no new count
+        # Second call — same ticker:settled_time, no new count
         changed = await svc._check_settlements()
         assert changed is False
         assert svc.state.total_settlement_count == 1
@@ -240,17 +244,18 @@ class TestSettlementCheck:
     @pytest.mark.asyncio
     async def test_multiple_settlements(self):
         settlements = [
-            MockSettlement(settlement_id="s1", revenue=100),
-            MockSettlement(settlement_id="s2", revenue=200),
+            MockSettlement(ticker="MKT-A", revenue=100, yes_total_cost=50),
+            MockSettlement(ticker="MKT-B", revenue=200, yes_total_cost=80),
         ]
         svc = _make_service(gateway=_make_gateway(settlements=settlements))
         await svc._check_settlements()
         assert svc.state.total_settlement_count == 2
-        assert svc.state.total_settlement_revenue == 300
+        # Net P&L = (100-50) + (200-80) = 50 + 120 = 170
+        assert svc.state.total_settlement_revenue == 170
 
     @pytest.mark.asyncio
     async def test_settlement_alert_emitted(self):
-        settlements = [MockSettlement(settlement_id="s1", revenue=450, market_ticker="MKT-A")]
+        settlements = [MockSettlement(ticker="MKT-A", revenue=450)]
         svc = _make_service(gateway=_make_gateway(settlements=settlements))
         await svc._check_settlements()
         assert len(svc.state.alerts) == 1
@@ -596,7 +601,7 @@ class TestSettlementMemoryFeedback:
         mock_memory.store = AsyncMock()
 
         gw = _make_gateway(
-            settlements=[MockSettlement(settlement_id="s1", result="yes", revenue=450, market_ticker="MKT-A")],
+            settlements=[MockSettlement(ticker="MKT-A", market_result="yes", revenue=450, yes_total_cost=200)],
         )
         svc = AccountHealthService(
             gateway=gw,
@@ -617,13 +622,14 @@ class TestSettlementMemoryFeedback:
         assert "SETTLEMENT" in call_kwargs.kwargs["content"]
         assert "MKT-A" in call_kwargs.kwargs["content"]
         assert call_kwargs.kwargs["metadata"]["result"] == "yes"
-        assert call_kwargs.kwargs["metadata"]["revenue_cents"] == 450
+        # Net P&L = 450 - 200 = 250
+        assert call_kwargs.kwargs["metadata"]["pnl_cents"] == 250
 
     @pytest.mark.asyncio
     async def test_settlement_no_memory_graceful(self):
         """No error when memory=None and settlement discovered."""
         gw = _make_gateway(
-            settlements=[MockSettlement(settlement_id="s2", result="no", revenue=-200, market_ticker="MKT-B")],
+            settlements=[MockSettlement(ticker="MKT-B", market_result="no", revenue=0, yes_total_cost=200)],
         )
         svc = AccountHealthService(
             gateway=gw,

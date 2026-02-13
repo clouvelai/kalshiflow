@@ -63,6 +63,8 @@ class KalshiGateway:
         rate: float = 10.0,
         burst: int = 20,
         subaccount: int = 0,
+        api_key_id: Optional[str] = None,
+        private_key_content: Optional[str] = None,
     ):
         """
         Args:
@@ -71,12 +73,17 @@ class KalshiGateway:
             rate: Sustained requests per second.
             burst: Burst capacity for rapid order placement.
             subaccount: Kalshi subaccount number (0=primary, 1-32=sub).
+            api_key_id: Override API key (uses global config if None).
+            private_key_content: Override private key (uses global config if None).
         """
         self._api_url = api_url.rstrip("/")
         self._ws_url = ws_url
         self._subaccount = subaccount
 
-        self._auth = GatewayAuth()
+        self._auth = GatewayAuth(
+            api_key_id=api_key_id,
+            private_key_content=private_key_content,
+        )
         self._limiter = GatewayRateLimiter(rate=rate, burst=burst)
         self._client: Optional[httpx.AsyncClient] = None
         self._ws: Optional[WSMultiplexer] = None
@@ -554,6 +561,23 @@ class KalshiGateway:
         data = await self._request("GET", path)
         ob_data = data.get("orderbook", data)
         return Orderbook.model_validate(ob_data)
+
+    # ------------------------------------------------------------------
+    # Candlesticks
+    # ------------------------------------------------------------------
+
+    async def get_event_candlesticks(
+        self,
+        series_ticker: str,
+        event_ticker: str,
+        start_ts: int,
+        end_ts: int,
+        period_interval: int = 60,
+    ) -> Dict[str, Any]:
+        """GET /series/{series}/events/{event}/candlesticks."""
+        params = f"start_ts={start_ts}&end_ts={end_ts}&period_interval={period_interval}"
+        path = f"/series/{series_ticker}/events/{event_ticker}/candlesticks?{params}"
+        return await self._request("GET", path)
 
     # ------------------------------------------------------------------
     # Health

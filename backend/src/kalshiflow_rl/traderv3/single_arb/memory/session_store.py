@@ -7,6 +7,7 @@ fire-and-forget via asyncio.create_task().
 
 import asyncio
 import collections
+import hashlib
 import logging
 import time
 from typing import Any, Dict, List, Optional
@@ -88,6 +89,7 @@ class SessionMemoryStore:
                             [content],
                             embeddings,
                             metadatas=[{"memory_type": memory_type, "timestamp": now, **metadata}],
+                            distance_strategy="COSINE",
                         )
                         self._faiss_ready = True
                         self._faiss_docs.append({"content": content, "memory_type": memory_type, "timestamp": now})
@@ -111,9 +113,147 @@ class SessionMemoryStore:
         # Fire-and-forget to pgvector (tracked for flush on shutdown)
         if self._vector_store:
             task = asyncio.create_task(self._store_pgvector(content, memory_type, metadata))
+            task.add_done_callback(self._suppress_task_exception)
             self._pending_writes.append(task)
             # Prune completed tasks to prevent list growth
             self._pending_writes = [t for t in self._pending_writes if not t.done()]
+
+    async def store_chunked(
+        self,
+        content: str,
+        memory_type: str = "news",
+        metadata: Optional[Dict[str, Any]] = None,
+        chunks: Optional[List] = None,
+    ) -> None:
+        """Store parent article + chunks to FAISS (session) + pgvector (persistent).
+
+        Parent article stored with memory_type. Chunks stored with memory_type='news_chunk'.
+        Each chunk links to parent via parent_memory_id in pgvector.
+
+        FAISS: parent + each chunk stored individually (for session recall).
+        pgvector: routed through VectorMemoryService.store_chunked() which properly
+        sets parent_memory_id and does batch embedding in a single API call.
+        """
+        metadata = metadata or {}
+        now = time.time()
+
+        # --- FAISS layer: store parent + each chunk individually for session recall ---
+
+        # Add parent to journal
+        self._journal.append({
+            "content": content,
+            "memory_type": memory_type,
+            "metadata": metadata,
+            "timestamp": now,
+        })
+
+        # Store parent in FAISS
+        if not self._faiss_unavailable:
+            try:
+                embeddings = self._get_embeddings()
+                if embeddings:
+                    if not self._faiss_ready:
+                        from langchain_community.vectorstores import FAISS
+                        self._faiss_store = await asyncio.to_thread(
+                            FAISS.from_texts,
+                            [content],
+                            embeddings,
+                            metadatas=[{"memory_type": memory_type, "timestamp": now, **metadata}],
+                            distance_strategy="COSINE",
+                        )
+                        self._faiss_ready = True
+                        self._faiss_docs.append({"content": content, "memory_type": memory_type, "timestamp": now})
+                    else:
+                        await asyncio.to_thread(
+                            self._faiss_store.add_texts,
+                            [content],
+                            metadatas=[{"memory_type": memory_type, "timestamp": now, **metadata}],
+                        )
+                        self._faiss_docs.append({"content": content, "memory_type": memory_type, "timestamp": now})
+            except ImportError:
+                self._faiss_unavailable = True
+                logger.info("FAISS unavailable (langchain_community not installed), using pgvector only")
+            except Exception as e:
+                logger.debug(f"FAISS store (parent) failed (non-critical): {e}")
+
+        # Store each chunk in FAISS for session recall
+        if chunks and not self._faiss_unavailable:
+            for chunk in chunks:
+                chunk_content = chunk.content if hasattr(chunk, 'content') else str(chunk)
+                chunk_metadata = dict(metadata)
+                chunk_metadata["chunk_index"] = getattr(chunk, 'chunk_index', 0)
+                chunk_metadata["total_chunks"] = getattr(chunk, 'total_chunks', len(chunks))
+                chunk_metadata["parent_url"] = getattr(chunk, 'parent_url', metadata.get("news_url", ""))
+
+                self._journal.append({
+                    "content": chunk_content,
+                    "memory_type": "news_chunk",
+                    "metadata": chunk_metadata,
+                    "timestamp": now,
+                })
+
+                try:
+                    embeddings = self._get_embeddings()
+                    if embeddings and self._faiss_ready and self._faiss_store:
+                        await asyncio.to_thread(
+                            self._faiss_store.add_texts,
+                            [chunk_content],
+                            metadatas=[{"memory_type": "news_chunk", "timestamp": now, **chunk_metadata}],
+                        )
+                        self._faiss_docs.append({"content": chunk_content, "memory_type": "news_chunk", "timestamp": now})
+
+                        # LRU eviction check
+                        if len(self._faiss_docs) > self.MAX_FAISS_ENTRIES:
+                            await self._evict_faiss(embeddings)
+                except Exception as e:
+                    logger.debug(f"FAISS store (chunk) failed (non-critical): {e}")
+
+        # --- pgvector layer: route through VectorMemoryService.store_chunked() ---
+        # This path properly sets parent_memory_id and does batch embedding.
+        if self._vector_store:
+            task = asyncio.create_task(
+                self._store_pgvector_chunked(content, memory_type, metadata, chunks)
+            )
+            task.add_done_callback(self._suppress_task_exception)
+            self._pending_writes.append(task)
+            # Prune completed tasks to prevent list growth
+            self._pending_writes = [t for t in self._pending_writes if not t.done()]
+
+    @staticmethod
+    def _suppress_task_exception(task: asyncio.Task) -> None:
+        """Retrieve and discard exception to suppress asyncio 'exception never retrieved' warning.
+
+        The actual error logging already happens inside _store_pgvector / _store_pgvector_chunked
+        try/except blocks, so this callback just consumes the exception reference.
+        """
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc:
+            # Already logged inside _store_pgvector / _store_pgvector_chunked
+            pass
+
+    async def _store_pgvector_chunked(
+        self, content: str, memory_type: str, metadata: Dict, chunks: Optional[List]
+    ) -> None:
+        """Background pgvector chunked store. Routes through VectorMemoryService.store_chunked()
+        which properly links chunks to parent via parent_memory_id.
+        Errors are logged, not raised.
+        """
+        try:
+            await self._vector_store.store_chunked(
+                content=content,
+                memory_type=memory_type,
+                metadata=metadata,
+                chunks=chunks,
+            )
+            self._pgvector_failure_count = 0
+        except Exception as e:
+            self._pgvector_failure_count += 1
+            if self._pgvector_failure_count <= 3:
+                logger.warning(f"pgvector store_chunked failed ({self._pgvector_failure_count} consecutive): {e}")
+            else:
+                logger.debug(f"pgvector store_chunked failed ({self._pgvector_failure_count} consecutive): {e}")
 
     async def _store_pgvector(self, content: str, memory_type: str, metadata: Dict) -> None:
         """Background pgvector store. Errors are logged, not raised."""
@@ -159,8 +299,8 @@ class SessionMemoryStore:
                         # Apply memory_types filter for FAISS results
                         if memory_types and doc_type not in memory_types:
                             continue
-                        # FAISS returns L2 distance; convert to similarity (lower = more similar)
-                        similarity = max(0, 1 - score / 2)
+                        # FAISS cosine distance_strategy returns cosine similarity (higher = more similar)
+                        similarity = max(0, score)
                         age_hours = (now - doc.metadata.get("timestamp", now)) / 3600
                         results.append(MemoryEntry(
                             content=doc.page_content,
@@ -200,7 +340,7 @@ class SessionMemoryStore:
         seen = set()
         unique = []
         for entry in sorted(results, key=lambda e: e.similarity, reverse=True):
-            key = entry.content[:100]
+            key = hashlib.md5(entry.content.encode()).hexdigest()
             if key not in seen:
                 seen.add(key)
                 unique.append(entry)
@@ -221,6 +361,7 @@ class SessionMemoryStore:
             from langchain_community.vectorstores import FAISS
             self._faiss_store = await asyncio.to_thread(
                 FAISS.from_texts, texts, embeddings, metadatas=metadatas,
+                distance_strategy="COSINE",
             )
             evicted = len(self._faiss_docs) - self.FAISS_EVICTION_KEEP
             self._faiss_docs = keep

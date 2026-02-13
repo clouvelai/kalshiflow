@@ -32,6 +32,10 @@ const ArbDashboard = () => {
     captainMode,
     captainTiming,
     discoveryState,
+    gatewayConfig,
+    tavilyBudget,
+    lifecycleTimeline,
+    trackedEvents,
   } = useArbWebSocket();
 
   const {
@@ -101,6 +105,8 @@ const ArbDashboard = () => {
         captainPaused={captainPaused}
         onCaptainPauseToggle={sendCaptainPauseToggle}
         exchangeStatus={exchangeStatus}
+        gatewayConfig={gatewayConfig}
+        tavilyBudget={tavilyBudget}
       />
 
       <div className="flex-1 flex overflow-hidden min-h-0">
@@ -111,6 +117,7 @@ const ArbDashboard = () => {
           events={eventList}
           selectedEventTicker={selectedEventTicker}
           onSelectEvent={setSelectedEventTicker}
+          gatewayConfig={gatewayConfig}
         />
 
         <CenterContent
@@ -144,6 +151,8 @@ const ArbDashboard = () => {
           connectionStatus={connectionStatus}
           systemState={systemState}
           startupMessages={startupMessages}
+          lifecycleTimeline={lifecycleTimeline}
+          trackedEvents={trackedEvents}
         />
 
         <OrdersSidebar

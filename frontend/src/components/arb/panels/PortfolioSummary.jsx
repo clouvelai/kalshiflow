@@ -6,11 +6,13 @@ const formatDollars = (cents) => {
   return `$${d.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 };
 
-const PortfolioSummary = memo(({ tradingState }) => {
+const PortfolioSummary = memo(({ tradingState, gatewayConfig }) => {
   const balance = tradingState?.balance ?? 0;
   const pnl = tradingState?.pnl;
   const posCount = tradingState?.position_count ?? 0;
   const subNum = tradingState?.subaccount_number ?? 0;
+  const isHybrid = gatewayConfig?.hybrid_mode;
+  const tradingSource = isHybrid ? 'demo' : (gatewayConfig?.trading_source || 'demo');
 
   const pnlCents = pnl?.total_pnl_cents ?? 0;
   const pnlDollars = pnlCents / 100;
@@ -24,15 +26,21 @@ const PortfolioSummary = memo(({ tradingState }) => {
             <DollarSign className="w-3 h-3" />
             Balance
             <span className="text-[9px] text-gray-600 ml-1">Sub #{subNum}</span>
+            <span className={`text-[8px] font-mono px-1 py-px rounded ${tradingSource === 'demo' ? 'bg-amber-900/20 text-amber-400/60' : 'bg-emerald-900/20 text-emerald-400/60'}`}>
+              {tradingSource}
+            </span>
           </div>
           <span className="text-[13px] font-mono font-semibold text-cyan-400 tabular-nums">
             {formatDollars(balance)}
           </span>
         </div>
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between group relative">
           <div className="flex items-center gap-1.5 text-[10px] text-gray-500">
             <TrendingUp className="w-3 h-3" />
-            P&L
+            Session P&L
+            <span className="invisible group-hover:visible absolute left-0 top-full mt-1 z-50 px-2 py-1 text-[9px] text-gray-300 bg-gray-900 border border-gray-700 rounded shadow-lg whitespace-nowrap">
+              Change in total equity (cash + positions) since system started
+            </span>
           </div>
           <span className={`text-[13px] font-mono font-semibold tabular-nums ${pnlColor}`}>
             {pnlDollars >= 0 ? '+' : ''}{formatDollars(pnlCents)}

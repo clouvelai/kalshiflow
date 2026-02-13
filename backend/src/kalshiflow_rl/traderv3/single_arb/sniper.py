@@ -29,7 +29,7 @@ import logging
 import random
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Coroutine, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, ClassVar, Coroutine, Dict, List, Optional, Set, Tuple
 
 from ..core.events.types import EventType
 from .index import ArbOpportunity, EventArbIndex
@@ -59,7 +59,7 @@ class SniperConfig:
     cooldown: float = 10.0          # Seconds between trades on same event
     max_trades_per_cycle: int = 5   # Between Captain cycles
     arb_min_edge: float = 3.0       # Min edge cents for S1_ARB
-    vpin_reject_threshold: float = 0.85  # VPIN > this → toxic flow, skip
+    vpin_reject_threshold: float = 0.98  # VPIN > this → toxic flow, skip (high for Kalshi's thin markets)
     order_ttl: int = 30             # Order TTL in seconds
     leg_timeout: float = 5.0        # Timeout per leg placement in seconds
 
@@ -84,12 +84,31 @@ class SniperConfig:
             "s7_sweep_enabled": self.s7_sweep_enabled,
         }
 
+    # Expected types for each field — used for LLM input coercion
+    _FIELD_TYPES: ClassVar[Dict[str, type]] = {
+        "enabled": bool, "max_position": int, "max_capital": int,
+        "cooldown": float, "max_trades_per_cycle": int, "arb_min_edge": float,
+        "vpin_reject_threshold": float, "order_ttl": int, "leg_timeout": float,
+        "s4_obi_enabled": bool, "s6_spread_enabled": bool, "s7_sweep_enabled": bool,
+    }
+
     def update(self, **kwargs) -> Tuple[List[str], List[str]]:
         """Partial update. Returns (changed_fields, unknown_fields)."""
         changed = []
         unknown = []
         for k, v in kwargs.items():
             if hasattr(self, k):
+                # Coerce LLM-provided values to expected types
+                expected = self._FIELD_TYPES.get(k)
+                if expected is bool and isinstance(v, str):
+                    v = v.lower() in ("true", "1", "yes", "on")
+                elif expected and not isinstance(v, expected):
+                    try:
+                        v = expected(v)
+                    except (ValueError, TypeError):
+                        logger.warning(f"[SNIPER:CONFIG] Cannot coerce {k}={v!r} to {expected.__name__}, skipped")
+                        unknown.append(k)
+                        continue
                 if getattr(self, k) != v:
                     setattr(self, k, v)
                     changed.append(k)
@@ -171,6 +190,9 @@ class SniperState:
     # Balance telemetry from API (populated on each risk gate check)
     last_balance_cents: Optional[int] = None
     last_portfolio_value_cents: Optional[int] = None
+    # Balance cache (avoid API call on every arb opportunity)
+    _cached_balance_cents: Optional[int] = None
+    _balance_cached_at: float = 0.0
     active_order_ids: Set[str] = field(default_factory=set)
     unhedged_positions: List[Dict] = field(default_factory=list)  # Filled legs from partial arbs
     last_trade_at: Optional[float] = None
@@ -234,6 +256,9 @@ class Sniper:
         self.state = SniperState()
         self._running = False
         self._paused = False
+
+        # Throttle SNIPER:SCALE log spam: maps event_ticker -> (last_scaled_value, last_log_time)
+        self._last_scale_log: Dict[str, tuple] = {}
 
     async def start(self) -> None:
         """Subscribe to EventBus and mark as running."""
@@ -384,9 +409,20 @@ class Sniper:
             return "invalid_price (total_price_per_contract=0)", 0
 
         try:
-            balance = await self._gateway.get_balance()
-            self.state.last_balance_cents = balance.balance
-            self.state.last_portfolio_value_cents = balance.portfolio_value
+            now = time.time()
+            if (self.state._cached_balance_cents is not None
+                    and now - self.state._balance_cached_at < 2.0):
+                balance_cents = self.state._cached_balance_cents
+                portfolio_value = self.state.last_portfolio_value_cents or 0
+            else:
+                balance = await self._gateway.get_balance()
+                balance_cents = balance.balance
+                portfolio_value = balance.portfolio_value
+                self.state._cached_balance_cents = balance_cents
+                self.state._balance_cached_at = now
+                self.state.last_portfolio_value_cents = portfolio_value
+
+            self.state.last_balance_cents = balance_cents
 
             capital_headroom = self.config.max_capital - self.state.capital_active
             if capital_headroom <= 0:
@@ -396,14 +432,14 @@ class Sniper:
                 ), 0
 
             max_from_capital = capital_headroom // total_price_per_contract
-            max_from_balance = balance.balance // total_price_per_contract
+            max_from_balance = balance_cents // total_price_per_contract
 
             contracts_per_leg = min(liquidity_contracts, max_from_capital, max_from_balance)
 
             if contracts_per_leg < 1:
                 if max_from_balance < 1:
                     return (
-                        f"insufficient_balance (available={balance.balance}c, "
+                        f"insufficient_balance (available={balance_cents}c, "
                         f"min_cost={total_price_per_contract}c)"
                     ), 0
                 return (
@@ -411,13 +447,23 @@ class Sniper:
                     f"< min_cost={total_price_per_contract}c)"
                 ), 0
 
-            # Log when scaling occurs
+            # Log when scaling occurs (throttled: only on value change or every 60s per event)
             if contracts_per_leg < liquidity_contracts:
-                logger.info(
-                    f"[SNIPER:SCALE] {opportunity.event_ticker} scaled "
-                    f"{liquidity_contracts} -> {contracts_per_leg} contracts/leg "
-                    f"(headroom={capital_headroom}c, balance={balance.balance}c)"
+                et_key = opportunity.event_ticker
+                now_ts = time.time()
+                prev = self._last_scale_log.get(et_key)
+                should_log = (
+                    prev is None
+                    or prev[0] != contracts_per_leg
+                    or (now_ts - prev[1]) >= 60.0
                 )
+                if should_log:
+                    self._last_scale_log[et_key] = (contracts_per_leg, now_ts)
+                    logger.info(
+                        f"[SNIPER:SCALE] {opportunity.event_ticker} scaled "
+                        f"{liquidity_contracts} -> {contracts_per_leg} contracts/leg "
+                        f"(headroom={capital_headroom}c, balance={balance_cents}c)"
+                    )
         except Exception as e:
             logger.warning(f"[SNIPER:GATE] Balance API failed, rejecting conservatively: {e}")
             return f"balance_api_error ({e})", 0

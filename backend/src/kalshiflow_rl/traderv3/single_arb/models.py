@@ -153,9 +153,11 @@ class NewsArticle(BaseModel):
     title: str = ""
     url: str = ""
     content: str = ""
+    raw_content: str = ""  # Full article body from Tavily Extract or advanced search
     published_date: str = ""
     score: float = 0.0
     source: str = ""
+    similar_patterns: List["ImpactPattern"] = Field(default_factory=list)
 
 
 class NewsSearchResult(BaseModel):
@@ -165,6 +167,30 @@ class NewsSearchResult(BaseModel):
     count: int = 0
     stored_in_memory: bool = False
     cached: bool = False
+
+
+class ImpactPattern(BaseModel):
+    """A historical news article that was similar AND moved prices."""
+    news_title: str = ""
+    news_url: str = ""
+    direction: str = ""        # "up" / "down"
+    change_cents: float = 0.0  # how much it moved prices
+    confidence: float = 0.0    # causal confidence
+    similarity: float = 0.0    # how similar to current article
+    event_ticker: str = ""     # which event it was on
+    market_ticker: str = ""
+
+
+class SwingNewsResult(BaseModel):
+    """Enhanced news search result with pattern enrichment."""
+    query: str = ""
+    articles: List[NewsArticle] = Field(default_factory=list)
+    count: int = 0
+    stored_in_memory: bool = False
+    cached: bool = False
+    depth: str = ""  # ultra_fast, fast, advanced
+    patterns_found: int = 0
+    tavily_answer: str = ""  # LLM synthesis from advanced search
 
 
 class MemoryEntry(BaseModel):
@@ -215,7 +241,8 @@ class SettlementSummary(BaseModel):
     """Single settlement record."""
     ticker: str = ""
     result: str = ""  # "yes", "no", or "voided"
-    revenue_cents: int = 0
+    revenue_cents: int = 0      # gross payout (keep for backward compat)
+    pnl_cents: int = 0          # net P&L = revenue - costs
     settled_at: Optional[str] = None
 
 
@@ -226,6 +253,17 @@ class StalePosition(BaseModel):
     side: str = ""
     quantity: int = 0
     reason: str = ""  # "market_settled", "market_closed", "event_closed"
+
+
+class DecisionAccuracyStats(BaseModel):
+    """Aggregated decision accuracy metrics from the decision ledger."""
+    total_decisions: int = 0
+    decisions_with_outcomes: int = 0
+    direction_accuracy_pct: float = 0.0
+    avg_hypothetical_pnl_cents: float = 0.0
+    would_have_filled_pct: float = 0.0
+    by_source: Dict = Field(default_factory=dict)
+    by_cycle_mode: Dict = Field(default_factory=dict)
 
 
 class AccountHealthStatus(BaseModel):
@@ -244,10 +282,12 @@ class AccountHealthStatus(BaseModel):
     orphaned_groups_cleaned: int = 0
     alerts: List[Dict] = Field(default_factory=list)
     activity_log: List[Dict] = Field(default_factory=list)
+    decision_accuracy: Optional[DecisionAccuracyStats] = None
 
 
 # Rebuild forward refs for nested models
 EventSnapshot.model_rebuild()
+NewsArticle.model_rebuild()
 
 
 # --- Attention Router Models (dataclasses, not Pydantic - internal only) ---

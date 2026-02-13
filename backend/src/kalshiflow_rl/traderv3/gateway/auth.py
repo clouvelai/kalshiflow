@@ -5,9 +5,11 @@ PEM file lifecycle and provides headers for both REST and WS auth.
 """
 
 import logging
+import os
+import tempfile
 from typing import Dict, Optional
 
-from ..clients.auth_utils import setup_kalshi_auth, cleanup_kalshi_auth
+from ..clients.auth_utils import setup_kalshi_auth, cleanup_kalshi_auth, format_private_key
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.gateway.auth")
 
@@ -19,14 +21,45 @@ class GatewayAuth:
     generation to the proven KalshiAuth class.
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        api_key_id: Optional[str] = None,
+        private_key_content: Optional[str] = None,
+    ):
+        self._override_api_key_id = api_key_id
+        self._override_private_key_content = private_key_content
         self._auth = None
         self._temp_key_file: Optional[str] = None
 
     def setup(self) -> None:
-        """Initialize auth credentials. Creates temp PEM file."""
-        self._auth, self._temp_key_file = setup_kalshi_auth(prefix="kalshi_gw_")
-        logger.info("Gateway auth initialized")
+        """Initialize auth credentials. Creates temp PEM file.
+
+        When override credentials were provided at construction time, uses
+        those instead of the global config — this is how the hybrid-mode
+        prod gateway authenticates with production Kalshi.
+        """
+        if self._override_api_key_id and self._override_private_key_content:
+            from kalshiflow.auth import KalshiAuth
+
+            temp_fd, temp_path = tempfile.mkstemp(suffix=".pem", prefix="kalshi_gw_prod_")
+            try:
+                with os.fdopen(temp_fd, "w") as f:
+                    f.write(format_private_key(self._override_private_key_content))
+                self._auth = KalshiAuth(
+                    api_key_id=self._override_api_key_id,
+                    private_key_path=temp_path,
+                )
+                self._temp_key_file = temp_path
+            except Exception:
+                try:
+                    os.unlink(temp_path)
+                except OSError:
+                    pass
+                raise
+            logger.info("Gateway auth initialized (override credentials)")
+        else:
+            self._auth, self._temp_key_file = setup_kalshi_auth(prefix="kalshi_gw_")
+            logger.info("Gateway auth initialized")
 
     def cleanup(self) -> None:
         """Remove temporary PEM file."""

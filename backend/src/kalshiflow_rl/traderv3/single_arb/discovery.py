@@ -92,6 +92,7 @@ class TopVolumeDiscovery:
         self._broadcast_callback = broadcast_callback
 
         self._known_event_tickers: Set[str] = set()
+        self._pinned_events: Set[str] = set()  # Lifecycle-bridged events (immune to eviction)
         self._event_volumes: Dict[str, int] = {}  # event_ticker -> total_volume_24h
         self._stats = DiscoveryStats()
         self._running = False
@@ -105,6 +106,11 @@ class TopVolumeDiscovery:
     @property
     def known_events(self) -> Set[str]:
         return set(self._known_event_tickers)
+
+    def add_external_event(self, event_ticker: str) -> None:
+        """Pin a lifecycle-bridged event (immune to eviction)."""
+        self._pinned_events.add(event_ticker)
+        self._known_event_tickers.add(event_ticker)
 
     async def discover(self) -> int:
         """Run one discovery pass: fetch all open events, rank by volume, load top N.
@@ -477,7 +483,7 @@ class TopVolumeDiscovery:
         Returns:
             Number of events evicted.
         """
-        stale = self._known_event_tickers - fresh_open_tickers
+        stale = self._known_event_tickers - fresh_open_tickers - self._pinned_events
         if not stale:
             return 0
 

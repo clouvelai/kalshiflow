@@ -236,7 +236,7 @@ class TaskLedger:
         try:
             async with pool.acquire() as conn:
                 await conn.execute(
-                    """INSERT INTO captain_task_ledger (session_id, cycle_num, tasks)
+                    """INSERT INTO captain_task_ledger (session_id, cycle, tasks)
                        VALUES ($1, $2, $3::jsonb)""",
                     self._session_id, cycle_num, snapshot,
                 )

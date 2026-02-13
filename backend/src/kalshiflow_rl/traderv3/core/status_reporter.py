@@ -85,6 +85,9 @@ class V3StatusReporter:
         # Event position tracker (set after initialization via setter)
         self._event_position_tracker: Optional['EventPositionTracker'] = None
 
+        # Single-arb coordinator (set after initialization via setter)
+        self._single_arb_coordinator = None
+
         # Reporting state
         self._status_task: Optional[asyncio.Task] = None
         self._trading_state_task: Optional[asyncio.Task] = None
@@ -158,6 +161,11 @@ class V3StatusReporter:
         """Set the event position tracker for event-level exposure reporting."""
         self._event_position_tracker = event_position_tracker
         logger.debug("Event position tracker set on status reporter")
+
+    def set_single_arb_coordinator(self, coordinator) -> None:
+        """Set the single-arb coordinator for tavily budget reporting."""
+        self._single_arb_coordinator = coordinator
+        logger.debug("Single-arb coordinator set on status reporter")
 
     async def emit_status_update(self, context: str = "") -> None:
         """Emit status update event immediately."""
@@ -341,6 +349,14 @@ class V3StatusReporter:
             # Get cached event research results for initial snapshot
             event_research_results = self._state_container.get_event_research_results()
 
+            # Get Tavily budget status from single-arb coordinator
+            tavily_budget = None
+            if self._single_arb_coordinator:
+                try:
+                    tavily_budget = self._single_arb_coordinator.get_tavily_budget_status()
+                except Exception:
+                    pass
+
             # Broadcast trading state via websocket
             await self._websocket_manager.broadcast_message("trading_state", {
                 "timestamp": time.time(),
@@ -377,6 +393,8 @@ class V3StatusReporter:
                 # Event research results for initial snapshot (Events tab)
                 # New clients see research that was broadcast before they connected
                 "event_research": event_research_results if event_research_results else None,
+                # Tavily search budget (credits used/remaining for arb header)
+                "tavily_budget": tavily_budget,
             })
 
             logger.debug(f"Broadcast trading state v{trading_summary['version']}")

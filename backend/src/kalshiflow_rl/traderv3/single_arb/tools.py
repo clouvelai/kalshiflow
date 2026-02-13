@@ -1,4 +1,4 @@
-"""Captain V2 tools - 12 tools for single-agent Captain.
+"""Captain V2 tools - 13 tools for single-agent Captain.
 
 Single ToolContext dataclass replaces 14 module-level globals.
 All tools return Pydantic models (serialized via .model_dump()).
@@ -17,6 +17,7 @@ from langchain_core.tools import tool
 from .models import (
     ArbLegResult,
     ArbResult,
+    ImpactPattern,
     MarketState,
     NewsArticle,
     NewsSearchResult,
@@ -24,18 +25,22 @@ from .models import (
     PortfolioState,
     RecallResult,
     RestingOrder,
+    SwingNewsResult,
 )
 
 if TYPE_CHECKING:
     from .account_health import AccountHealthService
     from .auto_actions import AutoActionManager
     from .context_builder import ContextBuilder
+    from .decision_ledger import DecisionLedger
     from .index import EventArbIndex
     from .memory.session_store import SessionMemoryStore
     from .sniper import Sniper, SniperConfig
+    from .swing_detector import SwingDetector
     from .tavily_service import TavilySearchService
     from ..agent_tools.session import TradingSession
     from ..gateway.client import KalshiGateway
+    from ..services.early_bird_service import EarlyBirdService
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.single_arb.tools_v2")
 
@@ -89,6 +94,10 @@ class ToolContext:
     broadcast: Optional[Callable[..., Coroutine]] = None
     health_service: Optional["AccountHealthService"] = None
     auto_actions: Optional["AutoActionManager"] = None
+    swing_detector: Optional["SwingDetector"] = None
+    decision_ledger: Optional["DecisionLedger"] = None
+    early_bird_service: Optional["EarlyBirdService"] = None
+    cycle_mode: Optional[str] = None  # "reactive", "strategic", "deep_scan"
     captain_order_ids: Set[str] = field(default_factory=set)
     order_initial_states: Dict[str, dict] = field(default_factory=dict)
     news_cache: Dict[str, tuple] = field(default_factory=dict)
@@ -165,9 +174,8 @@ async def _fetch_balance_with_budget_check(label: str) -> tuple:
 async def get_market_state() -> Dict[str, Any]:
     """Get current market state for all monitored events.
 
-    Returns structured JSON with events, markets, edges, regime, and semantics.
-    Usually unnecessary since the cycle briefing already contains this data.
-    Use for mid-cycle refresh if you suspect data has changed significantly.
+    DO NOT call in REACTIVE or STRATEGIC cycles — data is in your briefing.
+    Only use in DEEP_SCAN if you need per-market detail beyond the compact summary.
 
     Returns:
         MarketState with all events, markets, edges, volume, and regime
@@ -184,8 +192,9 @@ async def get_market_state() -> Dict[str, Any]:
 async def get_portfolio() -> Dict[str, Any]:
     """Get balance + all positions + P&L in one call.
 
-    Returns balance, positions (sorted by unrealized P&L), and totals.
-    Each position includes exit_price and unrealized_pnl_cents.
+    Your cycle briefing already includes portfolio data. place_order and execute_arb
+    return new_balance in their response. Only call if positions changed mid-cycle
+    AND are not reflected in order responses.
 
     Returns:
         PortfolioState with balance, positions, and P&L
@@ -303,6 +312,17 @@ async def place_order(
 
         # Track cycle capital spend
         _ctx.cycle_capital_spent_cents += contracts * price_cents
+
+        # Record to decision ledger (fire-and-forget)
+        if _ctx.decision_ledger:
+            event_ticker_for_ledger = _ctx.index.get_event_for_ticker(ticker) if _ctx.index else None
+            asyncio.create_task(_ctx.decision_ledger.record_decision(
+                order_id=order_id, source="captain",
+                event_ticker=event_ticker_for_ledger, market_ticker=ticker,
+                side=side, action=action, contracts=contracts,
+                limit_price_cents=price_cents, reasoning=reasoning,
+                cycle_mode=_ctx.cycle_mode,
+            ))
 
         new_balance_cents, new_balance_dollars = await _fetch_balance_with_budget_check("TRADE")
 
@@ -470,6 +490,16 @@ async def execute_arb(
                 order_id=order_id, status=order.status or "placed",
             ))
             exec_cost += leg.contracts * leg.price_cents
+
+            # Record each leg to decision ledger (fire-and-forget)
+            if _ctx.decision_ledger:
+                asyncio.create_task(_ctx.decision_ledger.record_decision(
+                    order_id=order_id, source="captain",
+                    event_ticker=event_ticker, market_ticker=leg.ticker,
+                    side=leg.side, action="buy", contracts=leg.contracts,
+                    limit_price_cents=leg.price_cents, reasoning=reasoning,
+                    cycle_mode=_ctx.cycle_mode,
+                ))
         except Exception as e:
             errors.append(f"{leg.ticker}: {e}")
 
@@ -552,7 +582,12 @@ async def cancel_order(order_id: str, reason: str = "") -> Dict[str, Any]:
                 memory_type="trade",
                 metadata={"order_id": order_id, "action": "cancel"},
             ))
-        return {"status": "cancelled", "order_id": order_id}
+        new_balance_cents, new_balance_dollars = await _fetch_balance_with_budget_check("CANCEL")
+        return {
+            "status": "cancelled", "order_id": order_id,
+            "new_balance_cents": new_balance_cents,
+            "new_balance_dollars": new_balance_dollars,
+        }
     except Exception as e:
         if "not found" in str(e).lower() or "404" in str(e):
             return {"status": "already_gone", "order_id": order_id}
@@ -607,112 +642,270 @@ async def get_resting_orders(ticker: Optional[str] = None) -> Dict[str, Any]:
 
 # --- Tool 7: search_news ---
 
+async def _build_price_snapshot(event_ticker: Optional[str]) -> Optional[Dict]:
+    """Build enriched price snapshot for news-price impact tracking."""
+    if not event_ticker or not _ctx or not _ctx.index:
+        return None
+    event = _ctx.index.events.get(event_ticker)
+    if not event:
+        return None
+    snap = {}
+    for mt, mm in event.markets.items():
+        if mm.yes_mid is not None:
+            snap[mt] = {
+                "yes_bid": mm.yes_bid,
+                "yes_ask": mm.yes_ask,
+                "yes_mid": mm.yes_mid,
+                "spread": mm.spread,
+                "volume_5m": mm.micro.volume_5m,
+                "book_imbalance": round(mm.micro.book_imbalance, 3),
+                "open_interest": mm.open_interest,
+            }
+    if snap:
+        snap["_ts"] = time.time()
+        return snap
+    return None
+
+
+async def _enrich_with_patterns(articles: List[NewsArticle]) -> int:
+    """Enrich articles with similar_patterns from the swing-news index.
+
+    For each article, embed the title+content and search for historically
+    similar news that moved prices. Returns count of patterns found.
+
+    Budget: 10s total, 3s per embedding, 3s per DB query. Stops enriching
+    remaining articles on budget exhaustion.
+    """
+    try:
+        from kalshiflow_rl.data.database import rl_db
+        pool = await asyncio.wait_for(rl_db.get_pool(), timeout=3.0)
+    except (Exception, asyncio.TimeoutError):
+        return 0
+
+    if not _ctx or not _ctx.memory:
+        return 0
+
+    total_patterns = 0
+    embeddings = _ctx.memory._get_embeddings()
+    if not embeddings:
+        return 0
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 10.0
+
+    for article in articles:
+        if not article.title:
+            continue
+        # Check total budget
+        if loop.time() >= deadline:
+            logger.info(f"[TOOLS:PATTERNS] Budget exhausted after enriching {total_patterns} patterns, skipping remaining articles")
+            break
+        try:
+            embed_text = f"{article.title} {article.content[:300]}"
+            embedding = await asyncio.wait_for(
+                asyncio.to_thread(embeddings.embed_query, embed_text),
+                timeout=3.0,
+            )
+
+            async with asyncio.timeout(3.0):
+                async with pool.acquire() as conn:
+                    rows = await conn.fetch(
+                        "SELECT * FROM find_similar_impact_patterns($1::vector, $2, $3)",
+                        str(embedding), 0.5, 3,
+                    )
+
+            for row in rows:
+                article.similar_patterns.append(ImpactPattern(
+                    news_title=row["news_title"] or "",
+                    news_url=row["news_url"] or "",
+                    direction=row["direction"] or "",
+                    change_cents=row["change_cents"] or 0.0,
+                    confidence=row["causal_confidence"] or 0.0,
+                    similarity=row["similarity"] or 0.0,
+                    event_ticker=row["event_ticker"] or "",
+                    market_ticker=row["market_ticker"] or "",
+                ))
+                total_patterns += 1
+        except asyncio.TimeoutError:
+            logger.debug(f"[TOOLS:PATTERNS] Timeout enriching article: {article.title[:50]}")
+        except Exception as e:
+            logger.debug(f"[TOOLS:PATTERNS] Pattern enrichment error: {e}")
+
+    return total_patterns
+
+
+def _resolve_depth(depth: str) -> str:
+    """Resolve 'auto' depth based on current cycle mode."""
+    if depth != "auto":
+        return depth
+    if not _ctx or not _ctx.cycle_mode:
+        return "fast"
+    mode_map = {"reactive": "ultra_fast", "strategic": "fast", "deep_scan": "advanced"}
+    return mode_map.get(_ctx.cycle_mode, "fast")
+
+
 @tool
 async def search_news(
     query: str,
     event_ticker: Optional[str] = None,
+    depth: str = "auto",
     time_range: str = "week",
     force_refresh: bool = False,
 ) -> Dict[str, Any]:
-    """Search web for news. Results cached 5 min; set force_refresh=True for fresh data.
+    """Search for news with pattern-aware impact predictions.
 
-    Uses Tavily (advanced) with DuckDuckGo fallback. Results auto-persisted
-    to pgvector for cross-session recall.
+    Three depth tiers (auto-selected by cycle mode, or override manually):
+    - ultra_fast: Memory recall only (0 credits, <10ms). Best for reactive cycles.
+    - fast: Memory + Tavily basic search (1 credit, ~2s). Default for strategic.
+    - advanced: Memory + Tavily advanced + full content + analysis (2 credits, ~5s). For deep_scan.
+
+    Each article is enriched with similar_patterns: historical news that looked
+    similar AND moved prices. Use these predictions to trade ahead of price moves.
 
     Args:
         query: Search query (be specific: "Fed rate decision March 2026")
         event_ticker: Optional event ticker for budget tracking
+        depth: "ultra_fast", "fast", "advanced", or "auto" (default "auto" = cycle-mode based)
         time_range: "day", "week", "month" (default "week")
         force_refresh: Bypass cache and fetch fresh results (default False)
 
     Returns:
-        NewsSearchResult with articles, count, and cached flag
+        SwingNewsResult with articles, pattern counts, and depth used
     """
-    if not _ctx or not _ctx.search:
-        return {"error": "Search service not available"}
+    if not _ctx:
+        return {"error": "ToolContext not available"}
 
-    # Check cache
-    cache_key = f"{query.lower().strip()}|{event_ticker or ''}|{time_range}"
-    if not force_refresh and cache_key in _ctx.news_cache:
+    effective_depth = _resolve_depth(depth)
+
+    # Check cache (skip for ultra_fast since it's already instant)
+    cache_key = f"{query.lower().strip()}|{event_ticker or ''}|{time_range}|{effective_depth}"
+    if not force_refresh and effective_depth != "ultra_fast" and cache_key in _ctx.news_cache:
         cached_ts, cached_result = _ctx.news_cache[cache_key]
         if time.time() - cached_ts < NEWS_CACHE_TTL:
             cached_result["cached"] = True
             return cached_result
 
+    articles: List[NewsArticle] = []
+    tavily_answer = ""
+
+    # --- TIER 1: ultra_fast (memory only) ---
+    # Always run: recall from FAISS + pgvector, filtering for swing_news type
     try:
-        raw_results = await _ctx.search.search_news(
-            query=query,
-            time_range=time_range,
-            event_ticker=event_ticker or "",
+        recalled = await _ctx.memory.recall(
+            query=query, limit=5, memory_types=["swing_news", "news"],
         )
+        if recalled and recalled.results:
+            for mem in recalled.results:
+                articles.append(NewsArticle(
+                    title=mem.content.split("\n")[0].replace("SWING_NEWS: ", "").replace("NEWS: ", "")[:100],
+                    content=mem.content[:500],
+                    source="memory",
+                    score=mem.similarity,
+                ))
+    except Exception as e:
+        logger.debug(f"[TOOLS:SEARCH] Memory recall error: {e}")
 
-        articles = [
-            NewsArticle(
-                title=r.get("title", ""),
-                url=r.get("url", ""),
-                content=r.get("content", "")[:500],
-                published_date=r.get("published_date", ""),
-                score=r.get("score", 0.0),
-                source=r.get("source", ""),
+    # --- TIER 2: fast (+ Tavily basic search) ---
+    if effective_depth in ("fast", "advanced") and _ctx.search:
+        try:
+            tavily_depth = "fast" if effective_depth == "fast" else "advanced"
+            tavily_topic = "finance" if effective_depth == "advanced" else "news"
+            include_raw = effective_depth == "advanced"
+            include_answer_mode = "advanced" if effective_depth == "advanced" else True
+
+            raw_results = await asyncio.wait_for(
+                _ctx.search.search_news(
+                    query=query,
+                    time_range=time_range,
+                    include_raw_content=include_raw,
+                    event_ticker=event_ticker or "",
+                    search_depth=tavily_depth,
+                ),
+                timeout=12.0,
             )
-            for r in raw_results[:5]
-        ]
 
-        # Auto-store headlines in memory for future recall
-        stored = False
-        if articles:
-            headlines = "; ".join(a.title for a in articles[:3] if a.title)
+            for r in raw_results[:5]:
+                # Check for answer summary
+                if r.get("answer_summary") and not tavily_answer:
+                    tavily_answer = r["answer_summary"]
+                articles.append(NewsArticle(
+                    title=r.get("title", ""),
+                    url=r.get("url", ""),
+                    content=r.get("content", "")[:500],
+                    raw_content=r.get("raw_content", "")[:2000] if include_raw else "",
+                    published_date=r.get("published_date", ""),
+                    score=r.get("score", 0.0),
+                    source=r.get("source", ""),
+                ))
+        except asyncio.TimeoutError:
+            logger.warning("[TOOLS:SEARCH] Tavily search timed out after 12s, using memory-only results")
+        except Exception as e:
+            logger.warning(f"[TOOLS:SEARCH] Tavily search error: {e}")
 
-            # Build enriched price snapshot for news-price impact tracking
-            price_snapshot = None
-            if event_ticker and _ctx.index:
-                event = _ctx.index.events.get(event_ticker)
-                if event:
-                    snap = {}
-                    for mt, mm in event.markets.items():
-                        if mm.yes_mid is not None:
-                            snap[mt] = {
-                                "yes_bid": mm.yes_bid,
-                                "yes_ask": mm.yes_ask,
-                                "yes_mid": mm.yes_mid,
-                                "spread": mm.spread,
-                                "volume_5m": mm.micro.volume_5m,
-                                "book_imbalance": round(mm.micro.book_imbalance, 3),
-                                "open_interest": mm.open_interest,
-                            }
-                    if snap:
-                        snap["_ts"] = time.time()
-                        price_snapshot = snap
+    # Deduplicate articles by title similarity
+    seen_titles: List[str] = []
+    deduped: List[NewsArticle] = []
+    for art in articles:
+        title_lower = art.title.lower().strip()
+        if any(title_lower == s for s in seen_titles):
+            continue
+        seen_titles.append(title_lower)
+        deduped.append(art)
+    articles = deduped[:8]
 
+    # --- Pattern enrichment (all tiers) ---
+    patterns_found = 0
+    if articles:
+        try:
+            patterns_found = await _enrich_with_patterns(articles)
+        except Exception as e:
+            logger.debug(f"[TOOLS:SEARCH] Pattern enrichment failed: {e}")
+
+    # --- Auto-store to memory (fast + advanced only) ---
+    stored = False
+    if effective_depth in ("fast", "advanced") and articles:
+        price_snapshot = await _build_price_snapshot(event_ticker)
+        for article in articles[:3]:
+            if article.source == "memory":
+                continue  # Don't re-store memory recalls
+            memory_content = (
+                f"NEWS: {article.title}\n"
+                f"Source: {article.source} | {article.published_date}\n"
+                f"URL: {article.url}\n\n"
+                f"{article.content}"
+            )
+            metadata = {
+                "query": query,
+                "event_ticker": event_ticker,
+                "news_url": article.url,
+                "news_title": article.title,
+                "news_published_at": article.published_date or None,
+                "news_source": article.source,
+                "price_snapshot": price_snapshot,
+            }
             asyncio.create_task(_ctx.memory.store(
-                content=f"NEWS [{query}]: {headlines}",
+                content=memory_content,
                 memory_type="news",
-                metadata={
-                    "query": query,
-                    "event_ticker": event_ticker,
-                    "article_count": len(articles),
-                    "news_url": articles[0].url if articles else None,
-                    "news_title": articles[0].title if articles else None,
-                    "price_snapshot": price_snapshot,
-                },
+                metadata=metadata,
             ))
-            stored = True
+        stored = True
 
-        result = NewsSearchResult(
-            query=query,
-            articles=articles,
-            count=len(articles),
-            stored_in_memory=stored,
-            cached=False,
-        ).model_dump()
+    result = SwingNewsResult(
+        query=query,
+        articles=articles,
+        count=len(articles),
+        stored_in_memory=stored,
+        cached=False,
+        depth=effective_depth,
+        patterns_found=patterns_found,
+        tavily_answer=tavily_answer,
+    ).model_dump()
 
-        # Store in cache
+    # Store in cache
+    if effective_depth != "ultra_fast":
         _ctx.news_cache[cache_key] = (time.time(), result)
 
-        return result
-
-    except Exception as e:
-        return {"error": f"News search failed: {e}"}
+    return result
 
 
 # --- Tool 8: recall_memory ---
@@ -735,33 +928,73 @@ async def recall_memory(query: str, limit: int = 5, memory_type: str = "") -> Di
     if not _ctx:
         return {"error": "ToolContext not available"}
     memory_types = [memory_type] if memory_type else None
-    result = await _ctx.memory.recall(query=query, limit=limit, memory_types=memory_types)
-    return result.model_dump()
+    try:
+        result = await asyncio.wait_for(
+            _ctx.memory.recall(query=query, limit=limit, memory_types=memory_types),
+            timeout=10.0,
+        )
+        return result.model_dump()
+    except asyncio.TimeoutError:
+        logger.warning("[TOOLS:RECALL] Memory recall timed out after 10s")
+        return RecallResult(results=[], count=0).model_dump()
 
 
 # --- Tool 9: store_insight ---
+
+# Patterns that indicate self-imposed restrictions (toxic behavioral rules)
+TOXIC_PATTERNS = [
+    "never trade", "pause trading", "freeze", "crisis",
+    "wait for accuracy", "recovery plan", "mandatory",
+    "no directional", "avoid all", "stop trading",
+    "trading freeze", "self-imposed", "accuracy gate",
+    "performance threshold",
+]
+
 
 @tool
 async def store_insight(
     content: str,
     memory_type: str = "learning",
+    event_ticker: str = "",
+    tags: str = "",
 ) -> Dict[str, Any]:
     """Store a learning or insight to session + persistent memory.
 
     Stored in both FAISS (session, instant recall) and pgvector (persistent,
     survives restarts). Use for lessons, observations, or rules.
 
+    ALWAYS include event_ticker when storing insights about a specific event.
+    This enables event-scoped recall later.
+
     Args:
         content: The insight to store (e.g., "IF VPIN > 0.85 THEN reduce position size")
         memory_type: Category: learning, observation, pattern, mistake (default "learning")
+        event_ticker: Event this insight relates to (e.g., "KXFEDCHAIRNOM-29"). Always include for event-specific insights.
+        tags: Comma-separated tags for categorization (e.g., "arb,fee,lesson")
 
     Returns:
         Confirmation dict
     """
     if not _ctx:
         return {"error": "ToolContext not available"}
-    await _ctx.memory.store(content=content, memory_type=memory_type)
-    return {"status": "stored", "memory_type": memory_type, "length": len(content)}
+
+    # Block self-imposed restrictions from being stored
+    content_lower = content.lower()
+    for pattern in TOXIC_PATTERNS:
+        if pattern in content_lower:
+            return {
+                "status": "rejected",
+                "reason": "Self-imposed restrictions are not allowed. Store factual observations only.",
+            }
+
+    metadata: Dict[str, Any] = {}
+    if event_ticker:
+        metadata["event_ticker"] = event_ticker
+    if tags:
+        metadata["tags"] = [t.strip() for t in tags.split(",") if t.strip()]
+    await _ctx.memory.store(content=content, memory_type=memory_type, metadata=metadata)
+    return {"status": "stored", "memory_type": memory_type, "length": len(content),
+            "event_ticker": event_ticker or None}
 
 
 # --- Tool 10: configure_sniper ---
@@ -815,9 +1048,8 @@ async def configure_sniper(settings: Dict[str, Any]) -> Dict[str, Any]:
 async def get_account_health() -> Dict[str, Any]:
     """Get account health snapshot: balance, drawdown, settlements, stale positions, alerts.
 
-    Zero-I/O call (reads cached state from background health service).
-    Use when you need to check account hygiene, review settlements,
-    or diagnose balance issues.
+    Health data is pre-injected in STRATEGIC and DEEP_SCAN briefings.
+    Only call after a significant mid-cycle balance change where you need fresh drawdown data.
 
     Returns:
         AccountHealthStatus with balance, drawdown, settlements, alerts, and status
@@ -900,16 +1132,19 @@ async def get_market_movers(
 
     try:
         from kalshiflow_rl.data.database import rl_db
-        pool = await rl_db.get_pool()
+        pool = await asyncio.wait_for(rl_db.get_pool(), timeout=3.0)
+    except asyncio.TimeoutError:
+        return {"error": "Database pool busy", "movers": [], "count": 0}
     except Exception as e:
         return {"error": f"Database not available: {e}", "movers": [], "count": 0}
 
     try:
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT * FROM find_market_movers($1, $2, $3)",
-                event_ticker, min_change_cents, 10,
-            )
+        async with asyncio.timeout(5.0):
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT * FROM find_market_movers($1, $2, $3)",
+                    event_ticker, min_change_cents, 10,
+                )
 
         movers = [
             {
@@ -924,9 +1159,32 @@ async def get_market_movers(
         ]
         return {"event_ticker": event_ticker, "movers": movers, "count": len(movers)}
 
+    except asyncio.TimeoutError:
+        logger.warning(f"[TOOLS:MARKET_MOVERS] Query timed out for {event_ticker}")
+        return {"error": "Database pool busy", "movers": [], "count": 0}
     except Exception as e:
         logger.warning(f"[TOOLS:MARKET_MOVERS] Query failed: {e}")
         return {"error": f"Query failed: {e}", "movers": [], "count": 0}
+
+
+# --- Tool 14: get_early_bird_opportunities ---
+
+@tool
+async def get_early_bird_opportunities() -> Dict[str, Any]:
+    """Get recently activated markets with early bird opportunity scores.
+
+    Returns scored opportunities for markets that just opened for trading.
+    Score breakdown includes complement pricing, category familiarity, timing, and risk.
+    Use in STRATEGIC or DEEP_SCAN to discover fresh markets worth investigating.
+
+    Returns:
+        Dict with opportunities list and count
+    """
+    if not _ctx or not _ctx.early_bird_service:
+        return {"opportunities": [], "note": "Early bird service not available", "count": 0}
+
+    opportunities = _ctx.early_bird_service.get_recent_opportunities()
+    return {"opportunities": opportunities, "count": len(opportunities)}
 
 
 # --- Tool list for Captain V2 ---
@@ -941,10 +1199,10 @@ ALL_TOOLS = [
     search_news,
     recall_memory,
     store_insight,
-    configure_sniper,
     get_account_health,
     configure_automation,
     get_market_movers,
+    get_early_bird_opportunities,
 ]
 
 # Tool categorization for frontend event routing
@@ -958,9 +1216,9 @@ TOOL_CATEGORIES = {
     "search_news": "arb",
     "recall_memory": "memory",
     "store_insight": "memory",
-    "configure_sniper": "sniper",
     "configure_automation": "sniper",
     "get_account_health": "system",
     "get_market_movers": "arb",
+    "get_early_bird_opportunities": "arb",
     "write_todos": "todo",
 }

@@ -15,7 +15,7 @@ Channel -> EventType mapping:
 
 import logging
 import time
-from typing import Any, Dict, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..core.event_bus import EventBus
@@ -31,20 +31,39 @@ class GatewayEventBridge:
     translates the messages into EventBus emit calls.
     """
 
-    def __init__(self, event_bus: "EventBus", ws: "WSMultiplexer", subaccount: int = 0):
+    def __init__(
+        self,
+        event_bus: "EventBus",
+        ws: "WSMultiplexer",
+        subaccount: int = 0,
+        channels: Optional[List[str]] = None,
+    ):
         self._event_bus = event_bus
         self._ws = ws
         self._subaccount = subaccount
+        self._channels = channels  # None = all channels (backwards compatible)
         self._events_bridged = 0
 
     def wire(self) -> None:
-        """Register all channel callbacks on the multiplexer."""
-        self._ws.register_callback("orderbook_delta", self._on_orderbook)
-        self._ws.register_callback("trade", self._on_trade)
-        self._ws.register_callback("ticker", self._on_ticker)
-        self._ws.register_callback("fill", self._on_fill)
-        self._ws.register_callback("market_positions", self._on_position)
-        logger.info("GatewayEventBridge wired to WSMultiplexer")
+        """Register channel callbacks on the multiplexer.
+
+        When ``channels`` is None (default), all five channels are registered.
+        Pass a list of channel names to register only a subset — useful for
+        hybrid mode where market data and portfolio events come from different
+        gateway instances.
+        """
+        channel_map = {
+            "orderbook_delta": self._on_orderbook,
+            "trade": self._on_trade,
+            "ticker": self._on_ticker,
+            "fill": self._on_fill,
+            "market_positions": self._on_position,
+        }
+        active = self._channels or list(channel_map.keys())
+        for ch in active:
+            if ch in channel_map:
+                self._ws.register_callback(ch, channel_map[ch])
+        logger.info(f"GatewayEventBridge wired to WSMultiplexer (channels={active})")
 
     # ------------------------------------------------------------------
     # Channel handlers

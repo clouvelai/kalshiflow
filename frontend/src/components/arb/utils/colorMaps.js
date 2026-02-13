@@ -6,7 +6,7 @@
 
 import {
   Database, Globe, FileText, ShoppingCart, Crosshair,
-  AlertTriangle, Clock, Search, Wallet, Wrench, HeartPulse,
+  AlertTriangle, Clock, Search, Wallet, Wrench, HeartPulse, Sunrise,
 } from 'lucide-react';
 
 // ─── Tool Category Mapping ───────────────────────────────────────────────────
@@ -24,6 +24,7 @@ export const getToolCategory = (toolName) => {
   if (['get_market_orderbook', 'get_recent_trades'].includes(toolName)) return 'market';
   if (['configure_sniper', 'configure_automation'].includes(toolName)) return 'sniper';
   if (['get_account_health'].includes(toolName)) return 'system';
+  if (['get_early_bird_opportunities'].includes(toolName)) return 'early_bird';
   if (['write_todos'].includes(toolName)) return 'todo';
   return 'other';
 };
@@ -39,6 +40,7 @@ export const CATEGORY_STYLES = {
   market: { bg: 'bg-blue-500/10', text: 'text-blue-400/80', dot: 'bg-blue-500', label: 'MKT' },
   sniper: { bg: 'bg-rose-500/10', text: 'text-rose-400/80', dot: 'bg-rose-500', label: 'SNPR' },
   system: { bg: 'bg-teal-500/10', text: 'text-teal-400/80', dot: 'bg-teal-500', label: 'SYS' },
+  early_bird: { bg: 'bg-lime-500/10', text: 'text-lime-400/80', dot: 'bg-lime-500', label: 'BIRD' },
   todo: { bg: 'bg-amber-500/10', text: 'text-amber-400/80', dot: 'bg-amber-500', label: 'TODO' },
   other: { bg: 'bg-gray-800/40', text: 'text-gray-400', dot: 'bg-gray-500', label: 'TOOL' },
 };
@@ -63,6 +65,7 @@ export const TOOL_ICONS = {
   configure_automation: Wrench,
   get_account_health: HeartPulse,
   get_market_movers: Globe,
+  get_early_bird_opportunities: Sunrise,
 };
 
 /**
@@ -124,6 +127,12 @@ export const ATTENTION_URGENCY_STYLES = {
   immediate: { bg: 'bg-red-500/15', text: 'text-red-400', dot: 'bg-red-500', pulse: true },
   high:      { bg: 'bg-amber-500/15', text: 'text-amber-400', dot: 'bg-amber-500', pulse: false },
   normal:    { bg: 'bg-gray-800/40', text: 'text-gray-400', dot: 'bg-gray-600', pulse: false },
+};
+
+// ─── Attention Category Styles (override urgency when category is special) ──
+
+export const ATTENTION_CATEGORY_STYLES = {
+  early_bird: { bg: 'bg-lime-500/12', text: 'text-lime-400', dot: 'bg-lime-500', pulse: true, label: 'EARLY BIRD' },
 };
 
 // ─── Auto-Action Styles ─────────────────────────────────────────────────────

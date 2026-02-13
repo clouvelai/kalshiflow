@@ -80,7 +80,7 @@ class V3Config:
     # Sports prefix filter - only allow sports markets with these event_ticker prefixes
     # Set to empty list to allow ALL sports markets
     sports_allowed_prefixes: List[str] = field(default_factory=list)
-    lifecycle_max_markets: int = 1000  # Maximum tracked markets (orderbook WS limit)
+    lifecycle_max_markets: int = 5000  # Maximum tracked markets (orderbook WS limit)
     lifecycle_sync_interval: int = 30  # Seconds between market info syncs
 
     # API Discovery Configuration (bootstrap lifecycle with already-open markets)
@@ -98,6 +98,15 @@ class V3Config:
     dormant_volume_threshold: int = 0  # volume_24h <= this is "dormant" (default 0 = no activity)
     dormant_grace_period_hours: float = 1.0  # Minimum hours tracked before considering dormant
 
+    # Lifecycle Persistence Configuration
+    lifecycle_persistence_enabled: bool = True  # V3_LIFECYCLE_PERSISTENCE - persist tracked events/markets to DB
+
+    # Early Bird Configuration
+    early_bird_enabled: bool = True              # V3_EARLY_BIRD_ENABLED - detect newly activated markets
+    early_bird_min_score: float = 40.0           # V3_EARLY_BIRD_MIN_SCORE - minimum score to signal Captain
+    early_bird_cooldown_seconds: float = 120.0   # V3_EARLY_BIRD_COOLDOWN - cooldown between signals per event
+    early_bird_use_news: bool = True             # V3_EARLY_BIRD_USE_NEWS - use Tavily for news context
+
     # Single-Event Arbitrage Configuration
     single_arb_enabled: bool = False  # Enable single-event arb system
     single_arb_event_tickers: List[str] = field(default_factory=list)  # Events to monitor
@@ -113,18 +122,26 @@ class V3Config:
     # Subaccount Configuration
     subaccount: int = 0  # V3_SUBACCOUNT - 0=primary, 1-32=sub
 
+    # Hybrid Data Mode: stream real production market data while trading on demo
+    hybrid_data_mode: bool = False            # V3_HYBRID_DATA_MODE
+    prod_api_url: str = ""                    # V3_PROD_API_URL
+    prod_ws_url: str = ""                     # V3_PROD_WS_URL
+    prod_api_key_id: str = ""                 # V3_PROD_API_KEY_ID
+    prod_private_key_content: str = ""        # V3_PROD_PRIVATE_KEY_CONTENT
+
     # Sniper Execution Layer Configuration
     sniper_enabled: bool = False                    # V3_SNIPER_ENABLED - master kill switch
     sniper_max_position: int = 25                   # V3_SNIPER_MAX_POSITION - max contracts per market
     sniper_max_capital: int = 100000                 # V3_SNIPER_MAX_CAPITAL - max capital at risk (cents = $1000)
     sniper_cooldown: float = 10.0                   # V3_SNIPER_COOLDOWN - seconds between trades on same market
     sniper_max_trades_per_cycle: int = 5            # V3_SNIPER_MAX_TRADES_PER_CYCLE - between Captain cycles
-    sniper_arb_min_edge: float = 3.0               # V3_SNIPER_ARB_MIN_EDGE - min edge cents for S1_ARB
+    sniper_arb_min_edge: float = 0.5               # V3_SNIPER_ARB_MIN_EDGE - min edge cents for S1_ARB
     sniper_order_ttl: int = 30                     # V3_SNIPER_ORDER_TTL - order TTL in seconds
     sniper_leg_timeout: float = 5.0                # V3_SNIPER_LEG_TIMEOUT - per-leg placement timeout in seconds
+    sniper_vpin_reject_threshold: float = 0.98     # V3_SNIPER_VPIN_REJECT_THRESHOLD - VPIN above this blocks sniper (high for Kalshi thin markets)
 
     # Discovery Configuration
-    discovery_event_count: int = 10               # V3_DISCOVERY_EVENT_COUNT - top N events by volume
+    discovery_event_count: int = 10               # V3_DISCOVERY_EVENT_COUNT - top N events by volume (lifecycle bridge adds the rest)
     discovery_seed_events: List[str] = field(default_factory=list)  # V3_DISCOVERY_SEED_EVENTS - optional hard-coded event tickers
     discovery_max_markets_per_event: int = 50     # V3_DISCOVERY_MAX_MARKETS - skip oversized events
     discovery_refresh_interval: float = 300.0      # V3_DISCOVERY_REFRESH_INTERVAL - seconds between discovery refreshes
@@ -132,6 +149,24 @@ class V3Config:
     # Attention-Driven Captain Configuration
     strategic_interval: float = 300.0              # V3_STRATEGIC_INTERVAL - seconds between strategic reviews
     deep_scan_interval: float = 1800.0             # V3_DEEP_SCAN_INTERVAL - seconds between deep scans
+    portfolio_cache_ttl: float = 15.0              # V3_PORTFOLIO_CACHE_TTL - seconds between portfolio refreshes in trigger loop
+
+    # Swing Detection Configuration
+    swing_detection_enabled: bool = True          # V3_SWING_DETECTION_ENABLED
+    swing_min_change_cents: float = 5.0           # V3_SWING_MIN_CHANGE_CENTS
+    swing_volume_multiplier: float = 2.0          # V3_SWING_VOLUME_MULTIPLIER
+    swing_live_window_seconds: float = 900.0      # V3_SWING_LIVE_WINDOW
+    swing_max_searches_per_loop: int = 3          # V3_SWING_MAX_SEARCHES
+    swing_candle_refresh_seconds: float = 3600.0  # V3_SWING_CANDLE_REFRESH
+
+    # Captain Sizing Configuration (configurable contract sizes for prompt)
+    captain_eb_complement_size: str = "100-250"     # V3_CAPTAIN_EB_COMPLEMENT_SIZE - complement strategy contract range
+    captain_eb_decide_size: str = "50-150"          # V3_CAPTAIN_EB_DECIDE_SIZE - captain-decide contract range
+    captain_news_size_small: str = "10-25"          # V3_CAPTAIN_NEWS_SIZE_SMALL - edge 2-5c contract range
+    captain_news_size_medium: str = "25-50"         # V3_CAPTAIN_NEWS_SIZE_MEDIUM - edge 5-10c contract range
+    captain_news_size_large: str = "50-100"         # V3_CAPTAIN_NEWS_SIZE_LARGE - edge >=10c contract range
+    captain_max_contracts_per_market: int = 200     # V3_CAPTAIN_MAX_CONTRACTS - hard cap per market
+    captain_max_capital_pct_per_event: int = 20     # V3_CAPTAIN_MAX_CAPITAL_PCT - max % of capital per event
 
     # Account Health Configuration
     max_drawdown_pct: float = 25.0                 # V3_MAX_DRAWDOWN_PCT - pause Captain when drawdown exceeds this
@@ -149,6 +184,11 @@ class V3Config:
     tavily_monthly_budget: int = 10000          # V3_TAVILY_MONTHLY_BUDGET
     tavily_news_time_range: str = "week"        # V3_TAVILY_NEWS_TIME_RANGE (day/week/month)
     tavily_max_results: int = 20                # V3_TAVILY_MAX_RESULTS
+
+    # News Ingestion Configuration (background polling)
+    news_ingestion_enabled: bool = True         # V3_NEWS_INGESTION_ENABLED
+    news_max_credits_per_cycle: int = 20        # V3_NEWS_MAX_CREDITS_PER_CYCLE
+    news_extract_top_n: int = 2                 # V3_NEWS_EXTRACT_TOP_N
 
     # State Machine Configuration
     sync_duration: float = 10.0  # seconds for Kalshi data sync
@@ -252,7 +292,7 @@ class V3Config:
         # Default: KXNFL (NFL markets only). Set empty to allow all sports.
         sports_prefixes_str = os.environ.get("SPORTS_ALLOWED_PREFIXES", "")
         sports_allowed_prefixes = [p.strip() for p in sports_prefixes_str.split(",") if p.strip()]
-        lifecycle_max_markets = int(os.environ.get("LIFECYCLE_MAX_MARKETS", "1000"))
+        lifecycle_max_markets = int(os.environ.get("LIFECYCLE_MAX_MARKETS", "5000"))
         lifecycle_sync_interval = int(os.environ.get("LIFECYCLE_SYNC_INTERVAL", "30"))
 
         # API Discovery configuration (bootstrap with already-open markets)
@@ -270,6 +310,15 @@ class V3Config:
         dormant_detection_enabled = os.environ.get("DORMANT_DETECTION_ENABLED", "true").lower() == "true"
         dormant_volume_threshold = int(os.environ.get("DORMANT_VOLUME_THRESHOLD", "0"))
         dormant_grace_period_hours = float(os.environ.get("DORMANT_GRACE_PERIOD_HOURS", "1.0"))
+
+        # Lifecycle Persistence configuration
+        lifecycle_persistence_enabled = os.environ.get("V3_LIFECYCLE_PERSISTENCE", "true").lower() == "true"
+
+        # Early Bird configuration
+        early_bird_enabled = os.environ.get("V3_EARLY_BIRD_ENABLED", "true").lower() == "true"
+        early_bird_min_score = float(os.environ.get("V3_EARLY_BIRD_MIN_SCORE", "40.0"))
+        early_bird_cooldown_seconds = float(os.environ.get("V3_EARLY_BIRD_COOLDOWN", "120.0"))
+        early_bird_use_news = os.environ.get("V3_EARLY_BIRD_USE_NEWS", "true").lower() == "true"
 
         # Single-event arb configuration
         single_arb_enabled = os.environ.get("V3_SINGLE_ARB_ENABLED", "false").lower() == "true"
@@ -293,15 +342,38 @@ class V3Config:
             )
         subaccount = int(subaccount_raw)
 
+        # Hybrid Data Mode configuration
+        hybrid_data_mode = os.environ.get("V3_HYBRID_DATA_MODE", "false").lower() == "true"
+        prod_api_url = os.environ.get("V3_PROD_API_URL", "")
+        prod_ws_url = os.environ.get("V3_PROD_WS_URL", "")
+        prod_api_key_id = os.environ.get("V3_PROD_API_KEY_ID", "")
+        prod_private_key_content = os.environ.get("V3_PROD_PRIVATE_KEY_CONTENT", "")
+
+        if hybrid_data_mode:
+            missing_prod = []
+            if not prod_api_url:
+                missing_prod.append("V3_PROD_API_URL")
+            if not prod_ws_url:
+                missing_prod.append("V3_PROD_WS_URL")
+            if not prod_api_key_id:
+                missing_prod.append("V3_PROD_API_KEY_ID")
+            if not prod_private_key_content:
+                missing_prod.append("V3_PROD_PRIVATE_KEY_CONTENT")
+            if missing_prod:
+                raise ValueError(
+                    f"V3_HYBRID_DATA_MODE=true but missing: {', '.join(missing_prod)}"
+                )
+
         # Sniper execution layer configuration
         sniper_enabled = os.environ.get("V3_SNIPER_ENABLED", "false").lower() == "true"
         sniper_max_position = int(os.environ.get("V3_SNIPER_MAX_POSITION", "25"))
         sniper_max_capital = int(os.environ.get("V3_SNIPER_MAX_CAPITAL", "100000"))
         sniper_cooldown = float(os.environ.get("V3_SNIPER_COOLDOWN", "10.0"))
         sniper_max_trades_per_cycle = int(os.environ.get("V3_SNIPER_MAX_TRADES_PER_CYCLE", "5"))
-        sniper_arb_min_edge = float(os.environ.get("V3_SNIPER_ARB_MIN_EDGE", "3.0"))
+        sniper_arb_min_edge = float(os.environ.get("V3_SNIPER_ARB_MIN_EDGE", "0.5"))
         sniper_order_ttl = int(os.environ.get("V3_SNIPER_ORDER_TTL", "30"))
         sniper_leg_timeout = float(os.environ.get("V3_SNIPER_LEG_TIMEOUT", "5.0"))
+        sniper_vpin_reject_threshold = float(os.environ.get("V3_SNIPER_VPIN_REJECT_THRESHOLD", "0.98"))
 
         # Discovery Configuration
         discovery_event_count = int(os.environ.get("V3_DISCOVERY_EVENT_COUNT", "10"))
@@ -313,6 +385,24 @@ class V3Config:
         # Attention-Driven Captain Configuration
         strategic_interval = float(os.environ.get("V3_STRATEGIC_INTERVAL", "300.0"))
         deep_scan_interval = float(os.environ.get("V3_DEEP_SCAN_INTERVAL", "1800.0"))
+        portfolio_cache_ttl = float(os.environ.get("V3_PORTFOLIO_CACHE_TTL", "15.0"))
+
+        # Swing Detection Configuration
+        swing_detection_enabled = os.environ.get("V3_SWING_DETECTION_ENABLED", "true").lower() == "true"
+        swing_min_change_cents = float(os.environ.get("V3_SWING_MIN_CHANGE_CENTS", "5.0"))
+        swing_volume_multiplier = float(os.environ.get("V3_SWING_VOLUME_MULTIPLIER", "2.0"))
+        swing_live_window_seconds = float(os.environ.get("V3_SWING_LIVE_WINDOW", "900.0"))
+        swing_max_searches_per_loop = int(os.environ.get("V3_SWING_MAX_SEARCHES", "3"))
+        swing_candle_refresh_seconds = float(os.environ.get("V3_SWING_CANDLE_REFRESH", "3600.0"))
+
+        # Captain Sizing Configuration
+        captain_eb_complement_size = os.environ.get("V3_CAPTAIN_EB_COMPLEMENT_SIZE", "100-250")
+        captain_eb_decide_size = os.environ.get("V3_CAPTAIN_EB_DECIDE_SIZE", "50-150")
+        captain_news_size_small = os.environ.get("V3_CAPTAIN_NEWS_SIZE_SMALL", "10-25")
+        captain_news_size_medium = os.environ.get("V3_CAPTAIN_NEWS_SIZE_MEDIUM", "25-50")
+        captain_news_size_large = os.environ.get("V3_CAPTAIN_NEWS_SIZE_LARGE", "50-100")
+        captain_max_contracts_per_market = int(os.environ.get("V3_CAPTAIN_MAX_CONTRACTS", "200"))
+        captain_max_capital_pct_per_event = int(os.environ.get("V3_CAPTAIN_MAX_CAPITAL_PCT", "20"))
 
         # Account Health Configuration
         max_drawdown_pct = float(os.environ.get("V3_MAX_DRAWDOWN_PCT", "25.0"))
@@ -344,6 +434,11 @@ class V3Config:
         tavily_monthly_budget = int(os.environ.get("V3_TAVILY_MONTHLY_BUDGET", "10000"))
         tavily_news_time_range = os.environ.get("V3_TAVILY_NEWS_TIME_RANGE", "week")
         tavily_max_results = int(os.environ.get("V3_TAVILY_MAX_RESULTS", "20"))
+
+        # News Ingestion Configuration
+        news_ingestion_enabled = os.environ.get("V3_NEWS_INGESTION_ENABLED", "true").lower() == "true"
+        news_max_credits_per_cycle = int(os.environ.get("V3_NEWS_MAX_CREDITS_PER_CYCLE", "20"))
+        news_extract_top_n = int(os.environ.get("V3_NEWS_EXTRACT_TOP_N", "2"))
 
         sync_duration = float(os.environ.get("V3_SYNC_DURATION", os.environ.get("V3_CALIBRATION_DURATION", "10.0")))
         health_check_interval = float(os.environ.get("V3_HEALTH_CHECK_INTERVAL", "5.0"))
@@ -393,6 +488,11 @@ class V3Config:
             dormant_detection_enabled=dormant_detection_enabled,
             dormant_volume_threshold=dormant_volume_threshold,
             dormant_grace_period_hours=dormant_grace_period_hours,
+            lifecycle_persistence_enabled=lifecycle_persistence_enabled,
+            early_bird_enabled=early_bird_enabled,
+            early_bird_min_score=early_bird_min_score,
+            early_bird_cooldown_seconds=early_bird_cooldown_seconds,
+            early_bird_use_news=early_bird_use_news,
             single_arb_enabled=single_arb_enabled,
             single_arb_event_tickers=single_arb_event_tickers,
             single_arb_poll_interval=single_arb_poll_interval,
@@ -408,6 +508,11 @@ class V3Config:
             model_utility=model_utility,
             model_embedding=model_embedding,
             subaccount=subaccount,
+            hybrid_data_mode=hybrid_data_mode,
+            prod_api_url=prod_api_url,
+            prod_ws_url=prod_ws_url,
+            prod_api_key_id=prod_api_key_id,
+            prod_private_key_content=prod_private_key_content,
             sniper_enabled=sniper_enabled,
             sniper_max_position=sniper_max_position,
             sniper_max_capital=sniper_max_capital,
@@ -416,12 +521,27 @@ class V3Config:
             sniper_arb_min_edge=sniper_arb_min_edge,
             sniper_order_ttl=sniper_order_ttl,
             sniper_leg_timeout=sniper_leg_timeout,
+            sniper_vpin_reject_threshold=sniper_vpin_reject_threshold,
             discovery_event_count=discovery_event_count,
             discovery_seed_events=discovery_seed_events,
             discovery_max_markets_per_event=discovery_max_markets_per_event,
             discovery_refresh_interval=discovery_refresh_interval,
             strategic_interval=strategic_interval,
             deep_scan_interval=deep_scan_interval,
+            portfolio_cache_ttl=portfolio_cache_ttl,
+            swing_detection_enabled=swing_detection_enabled,
+            swing_min_change_cents=swing_min_change_cents,
+            swing_volume_multiplier=swing_volume_multiplier,
+            swing_live_window_seconds=swing_live_window_seconds,
+            swing_max_searches_per_loop=swing_max_searches_per_loop,
+            swing_candle_refresh_seconds=swing_candle_refresh_seconds,
+            captain_eb_complement_size=captain_eb_complement_size,
+            captain_eb_decide_size=captain_eb_decide_size,
+            captain_news_size_small=captain_news_size_small,
+            captain_news_size_medium=captain_news_size_medium,
+            captain_news_size_large=captain_news_size_large,
+            captain_max_contracts_per_market=captain_max_contracts_per_market,
+            captain_max_capital_pct_per_event=captain_max_capital_pct_per_event,
             max_drawdown_pct=max_drawdown_pct,
             tavily_api_key=tavily_api_key,
             tavily_enabled=tavily_enabled,
@@ -429,6 +549,9 @@ class V3Config:
             tavily_monthly_budget=tavily_monthly_budget,
             tavily_news_time_range=tavily_news_time_range,
             tavily_max_results=tavily_max_results,
+            news_ingestion_enabled=news_ingestion_enabled,
+            news_max_credits_per_cycle=news_max_credits_per_cycle,
+            news_extract_top_n=news_extract_top_n,
             sync_duration=sync_duration,
             health_check_interval=health_check_interval,
             error_recovery_delay=error_recovery_delay,
@@ -485,7 +608,12 @@ class V3Config:
             logger.info(f"  - Event tracking: DISABLED")
 
         # Log gateway config
-        logger.info(f"  - Gateway: KalshiGateway + unified WS")
+        if hybrid_data_mode:
+            logger.info(f"  - Gateway: HYBRID MODE (prod market data + demo trading)")
+            logger.info(f"    - Prod API: {prod_api_url}")
+            logger.info(f"    - Demo API: {api_url}")
+        else:
+            logger.info(f"  - Gateway: KalshiGateway + unified WS")
 
         # Log Tavily config
         if tavily_enabled:
@@ -498,6 +626,12 @@ class V3Config:
             logger.info(f"  - Sniper: ENABLED (max_pos={sniper_max_position}, max_cap=${sniper_max_capital/100:.0f}, cooldown={sniper_cooldown}s, arb_edge>{sniper_arb_min_edge}c)")
         else:
             logger.info(f"  - Sniper: DISABLED")
+
+        # Log swing detection config
+        if swing_detection_enabled:
+            logger.info(f"  - Swing detection: ENABLED (min_change={swing_min_change_cents}c, vol_mult={swing_volume_multiplier}x, window={swing_live_window_seconds}s)")
+        else:
+            logger.info(f"  - Swing detection: DISABLED")
 
         # Log discovery config
         logger.info(f"  - Discovery: top {discovery_event_count} events by volume, max_markets={discovery_max_markets_per_event}, refresh={discovery_refresh_interval}s")

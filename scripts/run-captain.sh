@@ -90,6 +90,20 @@ if [ -z "$GOOGLE_API_KEY" ]; then
     exit 1
 fi
 
+# Hybrid Data Mode: load prod private key from file if configured
+if [ "$V3_HYBRID_DATA_MODE" = "true" ]; then
+    if [ -z "$V3_PROD_PRIVATE_KEY_CONTENT" ] && [ -n "$V3_PROD_PRIVATE_KEY_PATH" ]; then
+        if [ -f "$V3_PROD_PRIVATE_KEY_PATH" ]; then
+            export V3_PROD_PRIVATE_KEY_CONTENT=$(cat "$V3_PROD_PRIVATE_KEY_PATH")
+            echo -e "${GREEN}[$(ts)] Hybrid mode: prod key loaded from ${V3_PROD_PRIVATE_KEY_PATH}${NC}"
+        else
+            echo -e "${RED}[$(ts)] Error: Prod key file not found: ${V3_PROD_PRIVATE_KEY_PATH}${NC}"
+            exit 1
+        fi
+    fi
+    echo -e "${CYAN}[$(ts)] Hybrid Data Mode: prod market data + demo trading${NC}"
+fi
+
 # Non-critical warnings (don't exit)
 [ -z "$SUPABASE_URL" ] && echo -e "${YELLOW}[$(ts)] Warning: SUPABASE_URL not set (DB features disabled)${NC}"
 [ -z "$OPENAI_API_KEY" ] && echo -e "${YELLOW}[$(ts)] Warning: OPENAI_API_KEY not set (embeddings disabled)${NC}"
@@ -200,7 +214,7 @@ echo ""
 # Tail Captain-relevant logs
 TAIL_PID=""
 if [ -f "$LOG_FILE" ]; then
-    tail -f "$LOG_FILE" | grep --line-buffered -E "CAPTAIN|CYCLE|DEFERRED_INIT|ARB_OPPORTUNITY|ERROR|trade_commando|mentions|SNIPER" &
+    tail -f "$LOG_FILE" | grep --line-buffered -E "CAPTAIN|CYCLE|DEFERRED_INIT|ARB_OPPORTUNITY|ERROR|SNIPER|Early bird|MARKET_ACTIVATED|early_bird" &
     TAIL_PID=$!
 fi
 

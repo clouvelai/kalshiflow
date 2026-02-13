@@ -39,6 +39,7 @@ class EventType(Enum):
     # Event Lifecycle Discovery events
     MARKET_LIFECYCLE_EVENT = "market_lifecycle_event"  # Raw lifecycle events from Kalshi
     MARKET_TRACKED = "market_tracked"                   # Market added to tracking
+    MARKET_ACTIVATED = "market_activated"               # Market opened for trading (early bird trigger)
     MARKET_DETERMINED = "market_determined"             # Market outcome resolved
 
     # Trade Flow events (market microstructure tracking)

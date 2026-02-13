@@ -325,25 +325,33 @@ const HealthTab = memo(({ accountHealth }) => {
           <span className="text-[9px] text-gray-600 uppercase">Settlements</span>
           <span className="text-[10px] font-mono text-gray-400">{h.settlement_count_session || 0}</span>
         </div>
-        {h.total_realized_pnl_cents != null && h.total_realized_pnl_cents !== 0 && (
-          <div className="mt-0.5">
-            <span className="text-[9px] text-gray-600">Realized P&L: </span>
+        {h.total_realized_pnl_cents != null && (
+          <div className="mt-0.5 group relative">
+            <span className="text-[9px] text-gray-600">Settlement P&L: </span>
             <span className={`text-[10px] font-mono ${h.total_realized_pnl_cents >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
               {h.total_realized_pnl_cents >= 0 ? '+' : ''}{fmtCents(h.total_realized_pnl_cents)}
+            </span>
+            <span className="invisible group-hover:visible absolute left-0 top-full mt-1 z-50 px-2 py-1 text-[9px] text-gray-300 bg-gray-900 border border-gray-700 rounded shadow-lg whitespace-nowrap">
+              Net profit/loss from settled positions only
             </span>
           </div>
         )}
         {h.recent_settlements?.length > 0 && (
           <div className="mt-1.5 space-y-0.5">
-            {h.recent_settlements.slice(0, 5).map((s, i) => (
-              <div key={i} className="flex items-center gap-2 text-[9px]">
-                <span className="font-mono text-gray-400 truncate flex-1">{s.ticker || '--'}</span>
-                <span className={`font-semibold ${s.result === 'yes' ? 'text-emerald-400' : s.result === 'no' ? 'text-red-400' : 'text-gray-500'}`}>
-                  {(s.result || '').toUpperCase()}
-                </span>
-                <span className="font-mono text-gray-500 tabular-nums">{fmtCents(s.revenue_cents)}</span>
-              </div>
-            ))}
+            {h.recent_settlements.slice(0, 10).map((s, i) => {
+              const pnl = s.pnl_cents ?? s.revenue_cents;
+              return (
+                <div key={i} className="flex items-center gap-2 text-[9px]">
+                  <span className="font-mono text-gray-400 truncate flex-1">{s.ticker || '--'}</span>
+                  <span className={`font-semibold ${s.result === 'yes' ? 'text-emerald-400' : s.result === 'no' ? 'text-red-400' : 'text-gray-500'}`}>
+                    {(s.result || '').toUpperCase()}
+                  </span>
+                  <span className={`font-mono tabular-nums ${pnl == null ? 'text-gray-500' : pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                    {pnl != null && pnl >= 0 ? '+' : ''}{fmtCents(pnl)}
+                  </span>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>

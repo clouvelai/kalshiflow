@@ -2,6 +2,9 @@
 
 T1/T2 tests — pure Python + async. No network calls.
 Tests scoring, emission, deduplication, draining, and expiry.
+
+Note: Edge thresholds were lowered to match Kalshi reality:
+  EDGE_MIN_CENTS=0.5, EDGE_HIGH_CENTS=3.0, SCORE_EMIT_THRESHOLD=35
 """
 
 import asyncio
