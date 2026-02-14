@@ -21,6 +21,7 @@ export function useMMWebSocket() {
   const [tradingState, setTradingState] = useState(null);
   const [performance, setPerformance] = useState(null);
   const [tradeLog, setTradeLog] = useState([]);
+  const [balanceInfo, setBalanceInfo] = useState(null);
 
   const wsRef = useRef(null);
   const reconnectRef = useRef(null);
@@ -114,6 +115,10 @@ export function useMMWebSocket() {
         }));
         break;
 
+      case 'mm_balance_update':
+        setBalanceInfo(data);
+        break;
+
       case 'mm_performance_snapshot':
         setPerformance(data);
         break;
@@ -163,5 +168,6 @@ export function useMMWebSocket() {
     tradingState,
     performance,
     tradeLog,
+    balanceInfo,
   };
 }

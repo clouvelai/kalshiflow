@@ -20,6 +20,7 @@ const MMDashboard = () => {
     tradingState,
     performance,
     tradeLog,
+    balanceInfo,
   } = useMMWebSocket();
 
   const {
@@ -43,6 +44,7 @@ const MMDashboard = () => {
         connectionStatus={connectionStatus}
         quoteState={quoteState}
         performance={performance}
+        balanceInfo={balanceInfo}
         onPauseToggle={handlePauseToggle}
         isPaused={isPaused}
       />

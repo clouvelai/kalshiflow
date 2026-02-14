@@ -3,12 +3,15 @@ import { Activity, Wifi, WifiOff, Pause, Play } from 'lucide-react';
 
 const HEADER_HEIGHT = 44;
 
-const MMHeader = ({ connectionStatus, quoteState, performance, onPauseToggle, isPaused }) => {
+const MMHeader = ({ connectionStatus, quoteState, performance, balanceInfo, onPauseToggle, isPaused }) => {
   const isConnected = connectionStatus === 'connected';
   const activeQuotes = quoteState?.active_quotes ?? 0;
-  const totalPnL = performance?.realized_pnl_cents ?? 0;
+  const realizedPnL = balanceInfo?.total_realized_pnl_cents ?? (performance?.realized_pnl_cents ?? 0);
+  const unrealizedPnL = balanceInfo?.total_unrealized_pnl_cents ?? 0;
+  const totalPnL = realizedPnL + unrealizedPnL;
   const pnlDollars = (totalPnL / 100).toFixed(2);
   const pnlColor = totalPnL > 0 ? 'text-emerald-400' : totalPnL < 0 ? 'text-red-400' : 'text-gray-500';
+  const balanceDollars = balanceInfo?.balance_cents != null ? (balanceInfo.balance_cents / 100).toFixed(2) : null;
 
   return (
     <div
@@ -27,6 +30,14 @@ const MMHeader = ({ connectionStatus, quoteState, performance, onPauseToggle, is
 
         {/* Center: key metrics */}
         <div className="flex items-center gap-4">
+          {balanceDollars != null && (
+            <div className="flex items-center gap-1.5">
+              <span className="text-[9px] text-gray-500 uppercase tracking-wider">Balance</span>
+              <span className="text-[11px] font-mono font-semibold tabular-nums text-gray-300">
+                ${balanceDollars}
+              </span>
+            </div>
+          )}
           <div className="flex items-center gap-1.5">
             <span className="text-[9px] text-gray-500 uppercase tracking-wider">Quotes</span>
             <span className={`text-[11px] font-mono font-semibold tabular-nums ${activeQuotes > 0 ? 'text-emerald-400' : 'text-gray-600'}`}>

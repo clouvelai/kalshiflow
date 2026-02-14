@@ -71,6 +71,7 @@ class MMCoordinator:
         self._understanding_builder: Optional[UnderstandingBuilder] = None
         self._deferred_init_task: Optional[asyncio.Task] = None
         self._news_impact_task: Optional[asyncio.Task] = None
+        self._position_sync_task: Optional[asyncio.Task] = None
 
     async def start(self) -> None:
         """Initialize and start all MM components."""
@@ -252,9 +253,10 @@ class MMCoordinator:
             if self._admiral:
                 await self._admiral.start()
 
-            # Launch background intelligence tasks
+            # Launch background tasks
             self._deferred_init_task = asyncio.create_task(self._run_deferred_init())
             self._news_impact_task = asyncio.create_task(self._news_impact_tracker_loop())
+            self._position_sync_task = asyncio.create_task(self._run_position_sync_loop())
 
             self._system_ready.set()
 
@@ -287,8 +289,8 @@ class MMCoordinator:
         logger.info("[MM_COORD] Stopping market maker...")
         self._running = False
 
-        # Cancel background intelligence tasks
-        for task in (self._deferred_init_task, self._news_impact_task):
+        # Cancel background tasks
+        for task in (self._deferred_init_task, self._news_impact_task, self._position_sync_task):
             if task and not task.done():
                 task.cancel()
                 try:
@@ -340,6 +342,98 @@ class MMCoordinator:
             status["monitor"] = self._monitor.get_stats()
 
         return status
+
+    # ------------------------------------------------------------------ #
+    #  Position + Balance Sync (reconcile with Kalshi API)                #
+    # ------------------------------------------------------------------ #
+
+    async def _run_position_sync_loop(self) -> None:
+        """Periodically sync balance and positions from Kalshi API.
+
+        Runs every 30 seconds:
+        1. Fetch balance → update quote engine
+        2. Fetch positions → reconcile with local inventory
+        3. Detect settled markets → clean up from index
+        4. Broadcast updated state via WS
+        """
+        logger.info("[POSITION_SYNC] Starting sync loop (30s interval)")
+        await asyncio.sleep(5)  # Initial delay to let quotes settle
+
+        while self._running:
+            try:
+                await self._sync_balance_and_positions()
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning(f"[POSITION_SYNC] Error: {e}")
+                await asyncio.sleep(30)
+
+        logger.info("[POSITION_SYNC] Sync loop stopped")
+
+    async def _sync_balance_and_positions(self) -> None:
+        """Single sync pass: balance + positions from Kalshi API."""
+        if not self._gateway or not self._index:
+            return
+
+        # 1. Sync balance
+        try:
+            balance = await self._gateway.get_balance()
+            balance_cents = balance.balance if hasattr(balance, 'balance') else 0
+            if self._quote_engine:
+                self._quote_engine.update_balance(balance_cents)
+        except Exception as e:
+            logger.debug(f"[POSITION_SYNC] Balance fetch failed: {e}")
+            balance_cents = None
+
+        # 2. Sync positions for our event tickers
+        positions_by_market = {}
+        for event_ticker in list(self._index.events.keys()):
+            try:
+                positions = await self._gateway.get_positions(event_ticker=event_ticker)
+                for pos in positions:
+                    ticker = getattr(pos, 'ticker', None)
+                    if ticker:
+                        positions_by_market[ticker] = pos
+            except Exception as e:
+                logger.debug(f"[POSITION_SYNC] Positions fetch failed for {event_ticker}: {e}")
+
+        # 3. Reconcile positions with local inventory
+        reconciled = 0
+        for ticker in self._index.market_tickers:
+            inv = self._index.get_inventory(ticker)
+            api_pos = positions_by_market.get(ticker)
+            api_position = getattr(api_pos, 'position', 0) if api_pos else 0
+            api_realized = getattr(api_pos, 'realized_pnl', 0) if api_pos else 0
+
+            # Only update if API shows a different position
+            if api_position != inv.position:
+                logger.info(
+                    f"[POSITION_SYNC] Reconciling {ticker}: "
+                    f"local={inv.position} → api={api_position}"
+                )
+                inv.position = api_position
+                if api_pos:
+                    inv.realized_pnl_cents = api_realized
+                reconciled += 1
+
+        if reconciled > 0:
+            logger.info(f"[POSITION_SYNC] Reconciled {reconciled} markets")
+
+        # 4. Broadcast balance update
+        if self._websocket_manager and balance_cents is not None:
+            try:
+                total_realized = self._index.total_realized_pnl()
+                total_unrealized = self._index.total_unrealized_pnl()
+                await self._websocket_manager.broadcast_message("mm_balance_update", {
+                    "balance_cents": balance_cents,
+                    "total_realized_pnl_cents": round(total_realized, 1),
+                    "total_unrealized_pnl_cents": round(total_unrealized, 1),
+                    "positions_synced": len(positions_by_market),
+                    "timestamp": time.time(),
+                })
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------ #
     #  Deferred initialization (background LLM builds)                    #
