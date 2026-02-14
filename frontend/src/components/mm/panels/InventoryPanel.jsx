@@ -73,9 +73,8 @@ const InventoryPanel = ({ inventory = [] }) => {
                   ? 'bg-orange-500/10 text-orange-300/80'
                   : '';
               const bidPrice = m.bid_quote?.price;
-              const askPrice = m.ask_quote?.price;
-              // Convert NO ask price to YES terms for display
-              const askYesPrice = askPrice != null ? 100 - askPrice : null;
+              // Ask quote price is already in YES terms from backend
+              const askYesPrice = m.ask_quote?.price ?? null;
 
               return (
                 <div key={m.ticker} className="px-3 py-2 hover:bg-gray-800/15 transition-colors">

@@ -299,7 +299,7 @@ class QuoteEngine:
                         "total_sells": inv.total_sells,
                         "mid_cents": snap.fair_value or mid if snap else None,
                         "bid_quote": {"price": bid_q.price_cents, "size": bid_q.size} if bid_q else None,
-                        "ask_quote": {"price": ask_q.price_cents, "size": ask_q.size} if ask_q else None,
+                        "ask_quote": {"price": 100 - ask_q.price_cents, "size": ask_q.size} if ask_q else None,
                     })
                 await self._ws_broadcast("mm_inventory_update", {
                     "markets": inventory_markets,

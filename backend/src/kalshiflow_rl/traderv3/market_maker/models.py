@@ -187,6 +187,9 @@ class MMMarketSnapshot(BaseModel):
     """Per-market state for Admiral tools / WS broadcast."""
     ticker: str
     title: str
+    subtitle: str = ""
+    status: str = "open"
+    has_data: bool = False
     yes_bid: Optional[int] = None
     yes_ask: Optional[int] = None
     yes_bid_size: int = 0

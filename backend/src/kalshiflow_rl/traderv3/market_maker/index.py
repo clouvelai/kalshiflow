@@ -226,6 +226,9 @@ class MMIndex:
         return MMMarketSnapshot(
             ticker=market.ticker,
             title=market.title,
+            subtitle=market.subtitle,
+            status=market.status,
+            has_data=market.has_data,
             yes_bid=market.yes_bid,
             yes_ask=market.yes_ask,
             yes_bid_size=market.yes_bid_size,
