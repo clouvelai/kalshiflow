@@ -69,15 +69,17 @@ const TradeLogPanel = ({ tradeLog = [] }) => {
                           {(entry.type || '').replace(/_/g, ' ')}
                         </span>
                       </td>
-                      <td className="px-3 py-1.5 font-mono text-[10px] text-gray-300 truncate max-w-[120px]">
-                        {entry.ticker || entry.market_ticker || '--'}
+                      <td className="px-3 py-1.5 font-mono text-[10px] text-gray-300 truncate max-w-[120px]" title={entry.ticker || entry.market_ticker}>
+                        {(() => { const t = entry.ticker || entry.market_ticker || '--'; const p = t.split('-'); return p.length >= 3 ? p[p.length - 1] : t; })()}
                       </td>
                       <td className="px-3 py-1.5 text-center">
-                        {entry.side && (
+                        {(entry.side || entry.quote_side) && (
                           <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase ${
-                            entry.side === 'yes' ? 'bg-green-900/30 text-green-400' : 'bg-red-900/30 text-red-400'
+                            (entry.side === 'yes' || entry.quote_side === 'bid')
+                              ? 'bg-cyan-900/30 text-cyan-400'
+                              : 'bg-red-900/30 text-red-400'
                           }`}>
-                            {entry.side}
+                            {entry.quote_side || entry.side}
                           </span>
                         )}
                       </td>

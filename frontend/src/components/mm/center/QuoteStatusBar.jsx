@@ -26,6 +26,18 @@ const QuoteStatusBar = ({ quoteState }) => {
         <span className="text-[9px] text-red-400/60 truncate max-w-[200px]">{pullReason}</span>
       )}
 
+      {quoteState.spread_multiplier != null && quoteState.spread_multiplier !== 1 && (
+        <span className="text-[9px] font-mono text-amber-400">
+          spread {quoteState.spread_multiplier.toFixed(1)}x
+        </span>
+      )}
+
+      {quoteState.fees_paid_cents > 0 && (
+        <span className="text-[9px] font-mono text-gray-600">
+          fees: ${(quoteState.fees_paid_cents / 100).toFixed(2)}
+        </span>
+      )}
+
       <span className="text-[9px] font-mono text-gray-600 ml-auto">
         cycle #{totalCycles}
       </span>

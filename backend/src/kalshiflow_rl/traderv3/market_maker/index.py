@@ -239,7 +239,7 @@ class MMIndex:
             our_bid_price=bid_q.price_cents if bid_q else None,
             our_bid_size=bid_q.size if bid_q else 0,
             our_bid_queue=bid_q.queue_position if bid_q else None,
-            our_ask_price=ask_q.price_cents if ask_q else None,
+            our_ask_price=(100 - ask_q.price_cents) if ask_q else None,
             our_ask_size=ask_q.size if ask_q else 0,
             our_ask_queue=ask_q.queue_position if ask_q else None,
             position=inv.position,

@@ -9,12 +9,19 @@ const formatPnL = (cents) => {
 
 const pnlColor = (v) => v > 0 ? 'text-emerald-400' : v < 0 ? 'text-red-400' : 'text-gray-500';
 
+// Extract short suffix from ticker (e.g., KXNEWPOPE-70-PPIZ → PPIZ)
+const shortName = (ticker) => {
+  const parts = (ticker || '').split('-');
+  return parts.length >= 3 ? parts[parts.length - 1] : ticker;
+};
+
 /**
- * InventoryPanel - Shows positions, exposure, P&L per market.
+ * InventoryPanel - Shows per-market quotes, positions, and P&L.
  */
 const InventoryPanel = ({ inventory = [] }) => {
-  const totalPnL = inventory.reduce((s, m) => s + (m.unrealized_pnl_cents || 0), 0);
+  const totalPnL = inventory.reduce((s, m) => s + (m.realized_pnl_cents || 0) + (m.unrealized_pnl_cents || 0), 0);
   const totalExposure = inventory.reduce((s, m) => s + Math.abs(m.position || 0), 0);
+  const activeQuotes = inventory.filter(m => m.bid_quote || m.ask_quote).length;
 
   return (
     <div className="
@@ -28,15 +35,17 @@ const InventoryPanel = ({ inventory = [] }) => {
       <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800/20 shrink-0">
         <div className="flex items-center gap-2">
           <Briefcase className="w-4 h-4 text-violet-400/70" />
-          <span className="text-[11px] font-semibold text-gray-200 uppercase tracking-wider">Inventory</span>
+          <span className="text-[11px] font-semibold text-gray-200 uppercase tracking-wider">Markets</span>
           <span className="text-[10px] text-gray-500 font-mono tabular-nums">
-            {inventory.length} market{inventory.length !== 1 ? 's' : ''}
+            {inventory.length}
           </span>
         </div>
         <div className="flex items-center gap-3">
-          <div className="text-[9px] text-gray-500">
-            Exposure: <span className="font-mono text-gray-400 tabular-nums">{totalExposure}</span>
-          </div>
+          {totalExposure > 0 && (
+            <div className="text-[9px] text-gray-500">
+              Exp: <span className="font-mono text-gray-400 tabular-nums">{totalExposure}</span>
+            </div>
+          )}
           <span className={`font-mono text-sm font-semibold tabular-nums ${pnlColor(totalPnL)}`}>
             {formatPnL(totalPnL)}
           </span>
@@ -48,51 +57,80 @@ const InventoryPanel = ({ inventory = [] }) => {
         {inventory.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-gray-600">
             <Briefcase className="w-6 h-6 mb-2 opacity-30" />
-            <span className="text-[11px]">No inventory</span>
+            <span className="text-[11px]">No markets loaded</span>
           </div>
         ) : (
-          <div>
-            {/* Column headers */}
-            <div className="flex items-center gap-2 px-3 py-1.5 text-[8px] text-gray-600 uppercase tracking-wider border-b border-gray-800/20 sticky top-0 bg-gray-900/90 backdrop-blur-sm z-10">
-              <span className="flex-1">Market</span>
-              <span className="w-10 text-center shrink-0">Side</span>
-              <span className="w-10 text-right shrink-0">Pos</span>
-              <span className="w-12 text-right shrink-0">Avg</span>
-              <span className="w-12 text-right shrink-0">Mid</span>
-              <span className="w-16 text-right shrink-0">P&L</span>
-            </div>
+          <div className="divide-y divide-gray-800/15">
             {inventory.map(m => {
               const unrealizedPnL = m.unrealized_pnl_cents || 0;
-              const side = (m.position || 0) > 0 ? 'LONG' : (m.position || 0) < 0 ? 'SHORT' : 'FLAT';
+              const realizedPnL = m.realized_pnl_cents || 0;
+              const totalMarketPnL = unrealizedPnL + realizedPnL;
+              const pos = m.position || 0;
+              const side = pos > 0 ? 'LONG' : pos < 0 ? 'SHORT' : null;
               const sideColor = side === 'LONG'
                 ? 'bg-blue-500/10 text-blue-300/80'
                 : side === 'SHORT'
                   ? 'bg-orange-500/10 text-orange-300/80'
-                  : 'bg-gray-500/10 text-gray-500';
+                  : '';
+              const bidPrice = m.bid_quote?.price;
+              const askPrice = m.ask_quote?.price;
+              // Convert NO ask price to YES terms for display
+              const askYesPrice = askPrice != null ? 100 - askPrice : null;
 
               return (
-                <div
-                  key={m.ticker}
-                  className="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-800/20 transition-colors border-b border-gray-700/10"
-                >
-                  <span className="flex-1 text-[10px] font-mono text-gray-400 truncate min-w-0" title={m.ticker}>
-                    {m.ticker}
-                  </span>
-                  <span className={`w-10 text-center shrink-0 px-1.5 py-px rounded text-[8px] font-semibold uppercase ${sideColor}`}>
-                    {side}
-                  </span>
-                  <span className="w-10 text-right shrink-0 text-[10px] font-mono text-gray-300 tabular-nums">
-                    {Math.abs(m.position || 0)}
-                  </span>
-                  <span className="w-12 text-right shrink-0 text-[10px] font-mono text-gray-500 tabular-nums">
-                    {m.avg_entry_cents != null ? `${m.avg_entry_cents}c` : '--'}
-                  </span>
-                  <span className="w-12 text-right shrink-0 text-[10px] font-mono text-cyan-400/70 tabular-nums">
-                    {m.mid_cents != null ? `${m.mid_cents}c` : '--'}
-                  </span>
-                  <span className={`w-16 text-right shrink-0 text-[10px] font-mono font-semibold tabular-nums ${pnlColor(unrealizedPnL)}`}>
-                    {formatPnL(unrealizedPnL)}
-                  </span>
+                <div key={m.ticker} className="px-3 py-2 hover:bg-gray-800/15 transition-colors">
+                  {/* Row 1: Name + position/side */}
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="text-[11px] font-semibold text-gray-300 truncate" title={m.title}>
+                        {shortName(m.ticker)}
+                      </span>
+                      <span className="text-[9px] font-mono text-gray-600 truncate" title={m.ticker}>
+                        {m.title?.slice(0, 25)}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {side && (
+                        <span className={`px-1.5 py-px rounded text-[8px] font-semibold uppercase ${sideColor}`}>
+                          {side} {Math.abs(pos)}
+                        </span>
+                      )}
+                      {totalMarketPnL !== 0 && (
+                        <span className={`text-[10px] font-mono font-semibold tabular-nums ${pnlColor(totalMarketPnL)}`}>
+                          {formatPnL(totalMarketPnL)}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  {/* Row 2: Our quotes + mid */}
+                  <div className="flex items-center justify-between text-[10px] font-mono tabular-nums">
+                    <div className="flex items-center gap-2">
+                      {bidPrice != null ? (
+                        <span className="text-cyan-400/70">
+                          <span className="text-[8px] text-gray-600 mr-0.5">B</span>{bidPrice}c
+                        </span>
+                      ) : (
+                        <span className="text-gray-700">--</span>
+                      )}
+                      {m.mid_cents != null && (
+                        <span className="text-gray-500">
+                          <span className="text-[8px] text-gray-700 mr-0.5">FV</span>{typeof m.mid_cents === 'number' ? m.mid_cents.toFixed(1) : m.mid_cents}c
+                        </span>
+                      )}
+                      {askYesPrice != null ? (
+                        <span className="text-red-400/70">
+                          <span className="text-[8px] text-gray-600 mr-0.5">A</span>{askYesPrice}c
+                        </span>
+                      ) : (
+                        <span className="text-gray-700">--</span>
+                      )}
+                    </div>
+                    {(m.total_buys > 0 || m.total_sells > 0) && (
+                      <span className="text-[9px] text-gray-600">
+                        {m.total_buys}B/{m.total_sells}S
+                      </span>
+                    )}
+                  </div>
                 </div>
               );
             })}
