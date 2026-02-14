@@ -92,7 +92,12 @@ class MMMonitor:
     # ------------------------------------------------------------------
 
     async def _on_orderbook(self, market_ticker: str, metadata: Dict) -> None:
-        """Handle orderbook snapshot/delta from EventBus."""
+        """Handle orderbook snapshot/delta from EventBus.
+
+        In hybrid mode (production REST + demo WS), the demo WS may send empty
+        orderbook snapshots for markets that have real data on production.
+        Skip empty updates to avoid overwriting production REST data.
+        """
         if market_ticker not in self._index.market_tickers:
             return
 
@@ -101,15 +106,17 @@ class MMMonitor:
 
         if yes_levels or no_levels:
             self._index.on_orderbook_update(market_ticker, yes_levels, no_levels, source="ws")
+            self._update_count += 1
         else:
-            # BBO-only update
+            # BBO-only update — only apply if we have actual data
             yes_bid = metadata.get("yes_bid")
             yes_ask = metadata.get("yes_ask")
-            bid_size = metadata.get("yes_bid_size", 0)
-            ask_size = metadata.get("yes_ask_size", 0)
-            self._index.on_bbo_update(market_ticker, yes_bid, yes_ask, bid_size, ask_size, source="ws")
-
-        self._update_count += 1
+            if yes_bid is not None or yes_ask is not None:
+                bid_size = metadata.get("yes_bid_size", 0)
+                ask_size = metadata.get("yes_ask_size", 0)
+                self._index.on_bbo_update(market_ticker, yes_bid, yes_ask, bid_size, ask_size, source="ws")
+                self._update_count += 1
+            # else: empty WS snapshot — skip to preserve production REST data
 
         # Check for spread changes (signal to attention router)
         if self._attention:
@@ -224,9 +231,8 @@ class MMMonitor:
                     try:
                         ob = await self._trading_client.get_orderbook(ticker)
                         if ob:
-                            yes_levels = [[lv.price, lv.quantity] for lv in (ob.yes or [])]
-                            no_levels = [[lv.price, lv.quantity] for lv in (ob.no or [])]
-                            self._index.on_orderbook_update(ticker, yes_levels, no_levels, source="api")
+                            # ob.yes / ob.no are already List[List[int]] [[price, qty], ...]
+                            self._index.on_orderbook_update(ticker, ob.yes or [], ob.no or [], source="api")
                             self._poll_count += 1
                     except Exception:
                         pass
