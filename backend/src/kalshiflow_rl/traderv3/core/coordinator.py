@@ -1034,14 +1034,13 @@ class V3Coordinator:
             from ..gateway.client import KalshiGateway
             from ..market_maker.coordinator import MMCoordinator
 
-            # Create dedicated gateway for MM system (needed for order placement).
-            # Use demo API credentials — that's where paper trading balance lives.
+            # Create dedicated DEMO gateway for order placement (paper trading).
             mm_api_url = self._config.api_url
             mm_ws_url = self._config.ws_url
             mm_key_id = self._config.api_key_id
             mm_key_content = self._config.private_key_content
             mm_subaccount = self._config.subaccount
-            logger.info(f"MM gateway using demo API ({mm_api_url}, subaccount #{mm_subaccount})")
+            logger.info(f"MM order gateway: demo API ({mm_api_url}, subaccount #{mm_subaccount})")
 
             gateway = KalshiGateway(
                 api_url=mm_api_url,
@@ -1053,6 +1052,27 @@ class V3Coordinator:
             await gateway.connect()
             self._mm_gateway = gateway  # hold reference for cleanup
 
+            # Create PROD gateway for market data reads (real orderbooks).
+            market_data_gw = None
+            if self._config.hybrid_data_mode:
+                prod_url = self._config.prod_api_url
+                prod_ws = self._config.prod_ws_url
+                prod_key_id = self._config.prod_api_key_id
+                prod_key_content = self._config.prod_private_key_content
+                if prod_url and prod_key_id and prod_key_content:
+                    market_data_gw = KalshiGateway(
+                        api_url=prod_url,
+                        ws_url=prod_ws,
+                        api_key_id=prod_key_id,
+                        private_key_content=prod_key_content,
+                        subaccount=0,  # Read-only, no subaccount
+                    )
+                    await market_data_gw.connect()
+                    self._mm_prod_gateway = market_data_gw
+                    logger.info(f"MM data gateway: PRODUCTION API ({prod_url})")
+                else:
+                    logger.warning("MM hybrid_data_mode enabled but prod credentials incomplete")
+
             self._mm_coordinator = MMCoordinator(
                 config=self._config,
                 event_bus=self._event_bus,
@@ -1060,6 +1080,7 @@ class V3Coordinator:
                 orderbook_integration=self._orderbook_integration,
                 trading_client=self._trading_client_integration,
                 gateway=gateway,
+                market_data_gateway=market_data_gw,
             )
             await self._mm_coordinator.start()
 
@@ -1224,13 +1245,20 @@ class V3Coordinator:
             except Exception as e:
                 logger.error(f"[{step}/{total_steps}] Error stopping {name}: {e}")
 
-        # Disconnect MM gateway
+        # Disconnect MM gateways
         if mm_gw:
             try:
                 await mm_gw.disconnect()
-                logger.info("MM gateway disconnected")
+                logger.info("MM demo gateway disconnected")
             except Exception as e:
-                logger.warning(f"MM gateway disconnect error: {e}")
+                logger.warning(f"MM demo gateway disconnect error: {e}")
+        mm_prod_gw = getattr(self, '_mm_prod_gateway', None)
+        if mm_prod_gw:
+            try:
+                await mm_prod_gw.disconnect()
+                logger.info("MM prod gateway disconnected")
+            except Exception as e:
+                logger.warning(f"MM prod gateway disconnect error: {e}")
 
         step = len(active_components) + 1
 

@@ -25,7 +25,7 @@ done
 # Override: enable MM, disable single_arb, disable hybrid data mode
 export V3_MM_ENABLED=true
 export V3_SINGLE_ARB_ENABLED=false
-export V3_HYBRID_DATA_MODE=false
+export V3_HYBRID_DATA_MODE=true
 export V3_CLEANUP_ON_STARTUP=false
 
 # Helper: resolve relative path and read key file
