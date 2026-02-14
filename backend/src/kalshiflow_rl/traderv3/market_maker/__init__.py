@@ -1,6 +1,6 @@
-"""Market Maker (Admiral) - LLM-powered market making for Kalshi prediction markets.
+"""Market Maker - Deterministic quoting engine for Kalshi prediction markets.
 
-The Admiral agent configures a deterministic QuoteEngine that maintains
-continuous two-sided quotes on prediction market events. Architecture mirrors
-Captain/Sniper but targets market making instead of arbitrage.
+QuoteEngine maintains continuous two-sided quotes on prediction market events.
+Controlled by Captain via configure_quotes/pull_quotes/resume_quotes tools.
+No separate LLM agent — Captain configures, QuoteEngine executes.
 """

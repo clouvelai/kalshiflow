@@ -915,3 +915,22 @@ Rules:
                 json.dump(u.to_dict(), f, indent=2)
         except OSError as e:
             logger.debug(f"[UNDERSTANDING] Cache save failed: {e}")
+
+    def cleanup_cache(self, event_tickers_to_remove: set) -> int:
+        """Delete disk cache files for the given event tickers.
+
+        Returns number of files removed.
+        """
+        if not self._cache_dir:
+            return 0
+        removed = 0
+        for event_ticker in event_tickers_to_remove:
+            path = os.path.join(self._cache_dir, f"understanding_{event_ticker}.json")
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+                    removed += 1
+                    logger.debug(f"[UNDERSTANDING] Removed cache for {event_ticker}")
+            except OSError as e:
+                logger.debug(f"[UNDERSTANDING] Cache cleanup failed for {event_ticker}: {e}")
+        return removed

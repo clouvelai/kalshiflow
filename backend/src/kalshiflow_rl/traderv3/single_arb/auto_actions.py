@@ -190,7 +190,7 @@ class AutoActionManager:
     async def _handle_time_exit(self, item: AttentionItem) -> AutoActionResult:
         """Exit positions in events approaching settlement."""
         event_ticker = item.event_ticker
-        ttc_hours = item.data.get("time_to_close_hours", float("inf"))
+        ttc_hours = item.data.get("ttc_hours", float("inf"))
         ticker = item.data.get("ticker", "")
         side = item.data.get("side", "")
         quantity = item.data.get("quantity", 0)

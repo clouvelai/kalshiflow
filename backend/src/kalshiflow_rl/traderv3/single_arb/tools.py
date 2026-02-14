@@ -6,6 +6,7 @@ Order tools return new_balance so agent never needs a separate balance query.
 """
 
 import asyncio
+import collections
 import logging
 import random
 import time
@@ -41,6 +42,9 @@ if TYPE_CHECKING:
     from ..agent_tools.session import TradingSession
     from ..gateway.client import KalshiGateway
     from ..services.early_bird_service import EarlyBirdService
+    from ..market_maker.quote_engine import QuoteEngine
+    from ..market_maker.index import MMIndex
+    from ..market_maker.models import QuoteConfig
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.single_arb.tools_v2")
 
@@ -97,10 +101,14 @@ class ToolContext:
     swing_detector: Optional["SwingDetector"] = None
     decision_ledger: Optional["DecisionLedger"] = None
     early_bird_service: Optional["EarlyBirdService"] = None
+    quote_engine: Optional["QuoteEngine"] = None
+    mm_index: Optional["MMIndex"] = None
+    quote_config: Optional["QuoteConfig"] = None
+    max_contracts_per_market: int = 200  # From V3Config.captain_max_contracts_per_market
     cycle_mode: Optional[str] = None  # "reactive", "strategic", "deep_scan"
     captain_order_ids: Set[str] = field(default_factory=set)
     order_initial_states: Dict[str, dict] = field(default_factory=dict)
-    news_cache: Dict[str, tuple] = field(default_factory=dict)
+    news_cache: collections.OrderedDict = field(default_factory=collections.OrderedDict)
     cycle_capital_spent_cents: int = 0
 
 
@@ -225,7 +233,7 @@ async def place_order(
         ticker: Market ticker (e.g., KXMARKET-YES)
         side: "yes" or "no"
         action: "buy" or "sell"
-        contracts: Number of contracts (1-100)
+        contracts: Number of contracts (1 to max_contracts_per_market)
         price_cents: Limit price in cents (1-99)
         reasoning: Trade thesis (stored in memory)
 
@@ -239,8 +247,9 @@ async def place_order(
         return {"error": f"Invalid side: {side}. Must be 'yes' or 'no'."}
     if action not in ("buy", "sell"):
         return {"error": f"Invalid action: {action}. Must be 'buy' or 'sell'."}
-    if not (1 <= contracts <= 100):
-        return {"error": f"Contracts must be 1-100, got {contracts}"}
+    max_contracts = _ctx.max_contracts_per_market
+    if not (1 <= contracts <= max_contracts):
+        return {"error": f"Contracts must be 1-{max_contracts}, got {contracts}"}
     if not (1 <= price_cents <= 99):
         return {"error": f"Price must be 1-99 cents, got {price_cents}"}
 
@@ -269,6 +278,44 @@ async def place_order(
         except Exception as e:
             logger.warning(f"[TOOLS:TRADE] Position conflict check failed (blocking order): {e}")
             return {"error": f"Position conflict check failed: {e}. Cannot verify positions — order blocked for safety."}
+
+    # Edge gate: reject buy orders with no edge (sell/exit orders bypass)
+    if action == "buy" and _ctx.index:
+        event_ticker = _ctx.index.get_event_for_ticker(ticker)
+        if event_ticker:
+            event = _ctx.index.events.get(event_ticker)
+            market = event.markets.get(ticker) if event else None
+            if market:
+                if side == "yes" and market.yes_ask is not None and price_cents >= market.yes_ask:
+                    logger.info(
+                        f"[TOOLS:EDGE_GATE] BLOCKED buy YES {ticker}@{price_cents}c "
+                        f"(ask={market.yes_ask}c, no edge)"
+                    )
+                    return {
+                        "error": f"NO EDGE: Buying YES@{price_cents}c but ask is {market.yes_ask}c. "
+                        f"You'd be paying at or above the ask with 0 edge. Bid lower or skip.",
+                        "market_yes_ask": market.yes_ask, "market_yes_bid": market.yes_bid,
+                    }
+                if side == "no" and market.yes_bid is not None:
+                    no_ask = 100 - market.yes_bid
+                    if price_cents >= no_ask:
+                        logger.info(
+                            f"[TOOLS:EDGE_GATE] BLOCKED buy NO {ticker}@{price_cents}c "
+                            f"(no_ask={no_ask}c, no edge)"
+                        )
+                        return {
+                            "error": f"NO EDGE: Buying NO@{price_cents}c but NO ask is {no_ask}c. "
+                            f"You'd be paying at or above the ask with 0 edge. Bid lower or skip.",
+                            "market_yes_bid": market.yes_bid, "no_ask": no_ask,
+                        }
+                # Log edge value for analysis
+                if side == "yes" and market.yes_ask is not None:
+                    edge = market.yes_ask - price_cents
+                    logger.info(f"[TOOLS:EDGE] {ticker} YES buy@{price_cents}c ask={market.yes_ask}c edge={edge}c")
+                elif side == "no" and market.yes_bid is not None:
+                    no_ask = 100 - market.yes_bid
+                    edge = no_ask - price_cents
+                    logger.info(f"[TOOLS:EDGE] {ticker} NO buy@{price_cents}c no_ask={no_ask}c edge={edge}c")
 
     try:
         expiration_ts = int(time.time()) + session.order_ttl
@@ -416,35 +463,46 @@ async def execute_arb(
     except Exception as e:
         return {"error": f"Balance check failed: {e}"}
 
-    # Build legs
+    # Build legs with uniform contract count across all markets
     legs = []
-    total_cost = 0
     errors = []
+    min_available = max_contracts
 
+    # First pass: validate all markets and find minimum available size
     for book in event_state.markets.values():
         if direction == "long":
             if book.yes_ask is None:
                 errors.append(f"{book.ticker}: no YES ask")
                 continue
             side, price = "yes", book.yes_ask
+            available = book.yes_ask_size
         else:
             if book.yes_bid is None:
                 errors.append(f"{book.ticker}: no YES bid")
                 continue
             side, price = "no", 100 - book.yes_bid
+            available = book.yes_bid_size
 
-        contracts = min(max_contracts, book.yes_ask_size if direction == "long" else book.yes_bid_size)
-        contracts = max(contracts, 1)
-        leg_cost = contracts * price
-        if total_cost + leg_cost > balance:
-            errors.append(f"{book.ticker}: insufficient balance")
-            continue
-
+        min_available = min(min_available, available)
         legs.append(ArbLegResult(
             ticker=book.ticker, title=book.title,
-            side=side, contracts=contracts, price_cents=price,
+            side=side, contracts=0, price_cents=price,
         ))
-        total_cost += leg_cost
+
+    # Compute uniform contract count (same for every leg)
+    uniform_contracts = max(1, min_available)
+    total_cost = sum(leg.price_cents * uniform_contracts for leg in legs)
+
+    if total_cost > balance:
+        # Scale down to fit balance
+        total_price_per_contract = sum(leg.price_cents for leg in legs)
+        if total_price_per_contract > 0:
+            uniform_contracts = max(1, balance // total_price_per_contract)
+            total_cost = total_price_per_contract * uniform_contracts
+
+    # Apply uniform count to all legs
+    for leg in legs:
+        leg.contracts = uniform_contracts
 
     if dry_run:
         return ArbResult(
@@ -455,71 +513,76 @@ async def execute_arb(
             new_balance_dollars=round((balance - total_cost) / 100, 2),
         ).model_dump()
 
-    # Execute orders
+    # Execute all legs in parallel (following sniper._execute_arb pattern)
+    expiration_ts = int(time.time()) + session.order_ttl
+
+    async def _place_arb_leg(leg: ArbLegResult):
+        """Place a single arb leg order. Returns (leg, order_resp) on success."""
+        order_kwargs = {
+            "ticker": leg.ticker, "action": "buy", "side": leg.side,
+            "count": leg.contracts, "price": leg.price_cents,
+            "type": "limit",
+            "expiration_ts": expiration_ts,
+        }
+        if session.order_group_id:
+            order_kwargs["order_group_id"] = session.order_group_id
+        return leg, await gw.create_order(**order_kwargs)
+
+    results = await asyncio.gather(
+        *[_place_arb_leg(leg) for leg in legs],
+        return_exceptions=True,
+    )
+
+    # Process results
     exec_legs = []
     exec_cost = 0
-    for leg in legs:
-        try:
-            order_kwargs = {
-                "ticker": leg.ticker, "action": "buy", "side": leg.side,
-                "count": leg.contracts, "price": leg.price_cents,
-                "type": "limit",
-                "expiration_ts": int(time.time()) + session.order_ttl,
+    for i, result in enumerate(results):
+        if isinstance(result, Exception):
+            errors.append(f"{legs[i].ticker}: {result}")
+            continue
+        leg, order_resp = result
+        order = order_resp.order
+        order_id = order.order_id
+
+        if order_id:
+            _ctx.captain_order_ids.add(order_id)
+            session.captain_order_ids.add(order_id)
+            _ctx.order_initial_states[order_id] = {
+                "ticker": leg.ticker, "side": leg.side, "action": "buy",
+                "contracts": leg.contracts, "price_cents": leg.price_cents,
+                "placed_at": time.time(), "ttl_seconds": session.order_ttl,
+                "status": order.status or "placed",
             }
-            if session.order_group_id:
-                order_kwargs["order_group_id"] = session.order_group_id
 
-            order_resp = await gw.create_order(**order_kwargs)
-            order = order_resp.order
-            order_id = order.order_id
+        exec_legs.append(ArbLegResult(
+            ticker=leg.ticker, title=leg.title,
+            side=leg.side, contracts=leg.contracts,
+            price_cents=leg.price_cents,
+            order_id=order_id, status=order.status or "placed",
+        ))
+        exec_cost += leg.contracts * leg.price_cents
 
-            if order_id:
-                _ctx.captain_order_ids.add(order_id)
-                session.captain_order_ids.add(order_id)
-                _ctx.order_initial_states[order_id] = {
-                    "ticker": leg.ticker, "side": leg.side, "action": "buy",
-                    "contracts": leg.contracts, "price_cents": leg.price_cents,
-                    "placed_at": time.time(), "ttl_seconds": session.order_ttl,
-                    "status": order.status or "placed",
-                }
-
-            exec_legs.append(ArbLegResult(
-                ticker=leg.ticker, title=leg.title,
-                side=leg.side, contracts=leg.contracts,
-                price_cents=leg.price_cents,
-                order_id=order_id, status=order.status or "placed",
+        # Record each leg to decision ledger (fire-and-forget)
+        if _ctx.decision_ledger:
+            asyncio.create_task(_ctx.decision_ledger.record_decision(
+                order_id=order_id, source="captain",
+                event_ticker=event_ticker, market_ticker=leg.ticker,
+                side=leg.side, action="buy", contracts=leg.contracts,
+                limit_price_cents=leg.price_cents, reasoning=reasoning,
+                cycle_mode=_ctx.cycle_mode,
             ))
-            exec_cost += leg.contracts * leg.price_cents
-
-            # Record each leg to decision ledger (fire-and-forget)
-            if _ctx.decision_ledger:
-                asyncio.create_task(_ctx.decision_ledger.record_decision(
-                    order_id=order_id, source="captain",
-                    event_ticker=event_ticker, market_ticker=leg.ticker,
-                    side=leg.side, action="buy", contracts=leg.contracts,
-                    limit_price_cents=leg.price_cents, reasoning=reasoning,
-                    cycle_mode=_ctx.cycle_mode,
-                ))
-        except Exception as e:
-            errors.append(f"{leg.ticker}: {e}")
 
     status = "completed" if len(exec_legs) == event_state.markets_total else "partial"
     if not exec_legs:
         status = "failed"
 
-    # Unwind on partial fill: cancel successful legs to avoid unhedged exposure
-    if status == "partial" and exec_legs:
-        unwind_count = 0
-        for el in exec_legs:
-            if el.order_id:
-                try:
-                    await gw.cancel_order(el.order_id)
-                    unwind_count += 1
-                except Exception as cancel_err:
-                    errors.append(f"unwind {el.ticker}: {cancel_err}")
-        if unwind_count:
-            errors.append(f"Unwound {unwind_count}/{len(exec_legs)} legs due to partial fill")
-            status = "unwound"
+    # Log partial fill situation (don't try to unwind — Captain handles next cycle)
+    if status == "partial":
+        logger.warning(
+            f"[TOOLS:ARB] PARTIAL {event_ticker} {direction} "
+            f"legs={len(exec_legs)}/{event_state.markets_total} — "
+            f"Captain should review unhedged exposure next cycle"
+        )
 
     # Track cycle capital spend for arb legs
     _ctx.cycle_capital_spent_cents += exec_cost
@@ -782,6 +845,7 @@ async def search_news(
     if not force_refresh and effective_depth != "ultra_fast" and cache_key in _ctx.news_cache:
         cached_ts, cached_result = _ctx.news_cache[cache_key]
         if time.time() - cached_ts < NEWS_CACHE_TTL:
+            _ctx.news_cache.move_to_end(cache_key)
             cached_result["cached"] = True
             return cached_result
 
@@ -901,9 +965,11 @@ async def search_news(
         tavily_answer=tavily_answer,
     ).model_dump()
 
-    # Store in cache
+    # Store in cache (LRU eviction at 200 entries)
     if effective_depth != "ultra_fast":
         _ctx.news_cache[cache_key] = (time.time(), result)
+        if len(_ctx.news_cache) > 200:
+            _ctx.news_cache.popitem(last=False)
 
     return result
 
@@ -1187,6 +1253,173 @@ async def get_early_bird_opportunities() -> Dict[str, Any]:
     return {"opportunities": opportunities, "count": len(opportunities)}
 
 
+# --- Tool 15: configure_quotes ---
+
+@tool
+async def configure_quotes(settings: Dict[str, Any]) -> Dict[str, Any]:
+    """Configure the QuoteEngine (market maker) parameters.
+
+    Adjustable settings (pass only the ones you want to change):
+      - enabled (bool): Enable/disable quoting
+      - base_spread_cents (int): Minimum spread width (default 4)
+      - quote_size (int): Contracts per side per market (default 10)
+      - skew_factor (float): Inventory skew multiplier (default 0.5)
+      - max_position (int): Max contracts per market one side (default 100)
+      - refresh_interval (float): Seconds between requote cycles (default 5.0)
+
+    Args:
+        settings: Dict of QuoteConfig fields to update
+
+    Returns:
+        Dict with status, current config, and list of changes made
+    """
+    from ..market_maker.models import ConfigureQuotesResult
+
+    if not _ctx or not _ctx.quote_engine:
+        return ConfigureQuotesResult(
+            status="unavailable",
+            config={},
+            changes=["QuoteEngine not active"],
+        ).model_dump()
+
+    qc = _ctx.quote_config
+    if not qc:
+        return ConfigureQuotesResult(
+            status="unavailable",
+            config={},
+            changes=["QuoteConfig not available"],
+        ).model_dump()
+
+    ALLOWED = {
+        "enabled", "base_spread_cents", "quote_size", "skew_factor",
+        "skew_cap_cents", "max_position", "max_event_exposure",
+        "refresh_interval", "pull_quotes_threshold",
+    }
+    changes = []
+    for key, value in settings.items():
+        if key not in ALLOWED:
+            continue
+        old = getattr(qc, key, None)
+        if old != value:
+            setattr(qc, key, value)
+            changes.append(f"{key}: {old} → {value}")
+
+    config_dict = {
+        "enabled": qc.enabled,
+        "base_spread_cents": qc.base_spread_cents,
+        "quote_size": qc.quote_size,
+        "skew_factor": qc.skew_factor,
+        "max_position": qc.max_position,
+        "refresh_interval": qc.refresh_interval,
+    }
+
+    return ConfigureQuotesResult(
+        status="updated" if changes else "no_changes",
+        config=config_dict,
+        changes=changes,
+    ).model_dump()
+
+
+# --- Tool 16: pull_quotes ---
+
+@tool
+async def pull_quotes(reason: str) -> Dict[str, Any]:
+    """Emergency pull all market maker quotes.
+
+    Cancels all active MM quotes across all markets. Use when:
+    - VPIN spike detected on MM markets
+    - Adverse news on MM events
+    - Inventory risk too high
+
+    Args:
+        reason: Why quotes are being pulled (logged for telemetry)
+
+    Returns:
+        Dict with status and count of cancelled orders
+    """
+    from ..market_maker.models import PullQuotesResult
+
+    if not _ctx or not _ctx.quote_engine:
+        return PullQuotesResult(
+            status="unavailable", reason="QuoteEngine not active"
+        ).model_dump()
+
+    cancelled = await _ctx.quote_engine.pull_all_quotes(reason)
+    return PullQuotesResult(
+        status="pulled",
+        cancelled_orders=cancelled,
+        reason=reason,
+    ).model_dump()
+
+
+# --- Tool 17: resume_quotes ---
+
+@tool
+async def resume_quotes(reason: str) -> Dict[str, Any]:
+    """Resume market maker quoting after a pull.
+
+    Clears the pulled state so QuoteEngine resumes posting 2-sided quotes
+    on the next refresh cycle.
+
+    Args:
+        reason: Why quotes are being resumed (logged for telemetry)
+
+    Returns:
+        Dict with status
+    """
+    from ..market_maker.models import PullQuotesResult
+
+    if not _ctx or not _ctx.quote_engine:
+        return PullQuotesResult(
+            status="unavailable", reason="QuoteEngine not active"
+        ).model_dump()
+
+    _ctx.quote_engine.resume_quotes()
+    return PullQuotesResult(
+        status="resumed",
+        cancelled_orders=0,
+        reason=reason,
+    ).model_dump()
+
+
+# --- Tool 18: get_quote_performance ---
+
+@tool
+async def get_quote_performance() -> Dict[str, Any]:
+    """Get market maker performance telemetry.
+
+    Returns fills, spread capture, adverse selection, fees, net P&L,
+    and operational stats. Use in STRATEGIC/DEEP_SCAN to evaluate MM health.
+
+    Returns:
+        Dict with MM performance metrics
+    """
+    from ..market_maker.models import QuotePerformanceResult
+
+    if not _ctx or not _ctx.quote_engine:
+        return QuotePerformanceResult().model_dump()
+
+    state = _ctx.quote_engine.state
+    mm_index = _ctx.mm_index
+    realized = mm_index.total_realized_pnl() if mm_index else 0.0
+    total_fills = state.total_fills_bid + state.total_fills_ask
+    total_cycles = max(state.total_requote_cycles, 1)
+
+    return QuotePerformanceResult(
+        total_fills_bid=state.total_fills_bid,
+        total_fills_ask=state.total_fills_ask,
+        total_requote_cycles=state.total_requote_cycles,
+        spread_captured_cents=round(state.spread_captured_cents, 2),
+        adverse_selection_cents=round(state.adverse_selection_cents, 2),
+        fees_paid_cents=round(state.fees_paid_cents, 2),
+        net_pnl_cents=round(realized, 2),
+        quote_uptime_pct=state.quote_uptime_pct,
+        fill_rate_pct=round(total_fills / total_cycles * 100, 1) if total_fills else 0.0,
+        spread_multiplier=state.spread_multiplier,
+        fill_storm_active=state.fill_storm_active,
+    ).model_dump()
+
+
 # --- Tool list for Captain V2 ---
 
 ALL_TOOLS = [
@@ -1201,8 +1434,13 @@ ALL_TOOLS = [
     store_insight,
     get_account_health,
     configure_automation,
+    configure_sniper,
     get_market_movers,
     get_early_bird_opportunities,
+    configure_quotes,
+    pull_quotes,
+    resume_quotes,
+    get_quote_performance,
 ]
 
 # Tool categorization for frontend event routing
@@ -1217,8 +1455,13 @@ TOOL_CATEGORIES = {
     "recall_memory": "memory",
     "store_insight": "memory",
     "configure_automation": "sniper",
+    "configure_sniper": "sniper",
     "get_account_health": "system",
     "get_market_movers": "arb",
     "get_early_bird_opportunities": "arb",
+    "configure_quotes": "mm",
+    "pull_quotes": "mm",
+    "resume_quotes": "mm",
+    "get_quote_performance": "mm",
     "write_todos": "todo",
 }

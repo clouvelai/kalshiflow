@@ -11,15 +11,10 @@ import pytest
 from kalshiflow_rl.traderv3.market_maker.models import (
     ActiveQuote,
     ConfigureQuotesResult,
-    InventoryResult,
     MarketInventory,
     MMAttentionItem,
-    MMDeepScanContext,
     MMEventSnapshot,
     MMMarketSnapshot,
-    MMReactiveContext,
-    MMStateResult,
-    MMStrategicContext,
     PullQuotesResult,
     QuoteConfig,
     QuotePerformanceResult,
@@ -204,16 +199,6 @@ class TestPydanticModels:
         assert snap.market_count == 3
         assert snap.markets == {}
 
-    def test_mm_state_result_serializes(self):
-        result = MMStateResult()
-        d = result.model_dump()
-        assert "events" in d
-        assert "quote_config" in d
-
-    def test_inventory_result(self):
-        result = InventoryResult(total_position_contracts=50, balance_cents=10000)
-        assert result.balance_dollars == 0.0  # Only set if explicitly provided
-
     def test_configure_quotes_result(self):
         result = ConfigureQuotesResult(status="updated", changes=["spread: 4→6"])
         assert result.status == "updated"
@@ -222,23 +207,6 @@ class TestPydanticModels:
     def test_pull_quotes_result(self):
         result = PullQuotesResult(status="pulled", cancelled_orders=8, reason="VPIN spike")
         assert result.cancelled_orders == 8
-
-
-class TestContextModels:
-    """Tests for context dataclasses."""
-
-    def test_reactive_context_defaults(self):
-        ctx = MMReactiveContext()
-        assert ctx.cycle_num == 0
-        assert ctx.items == []
-
-    def test_strategic_context_defaults(self):
-        ctx = MMStrategicContext()
-        assert ctx.tasks == ""
-
-    def test_deep_scan_context_defaults(self):
-        ctx = MMDeepScanContext()
-        assert ctx.memories is None
 
 
 class TestNewsModelReExports:

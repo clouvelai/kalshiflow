@@ -130,7 +130,7 @@ class V3Config:
     prod_api_key_id: str = ""                 # V3_PROD_API_KEY_ID
     prod_private_key_content: str = ""        # V3_PROD_PRIVATE_KEY_CONTENT
 
-    # Market Maker (Admiral) Configuration
+    # Market Maker (QuoteEngine) Configuration
     mm_enabled: bool = False                          # V3_MM_ENABLED - master switch
     mm_event_tickers: List[str] = field(default_factory=list)  # V3_MM_EVENT_TICKERS (comma-separated)
     mm_base_spread_cents: int = 4                     # V3_MM_BASE_SPREAD
@@ -140,9 +140,12 @@ class V3Config:
     mm_skew_factor: float = 0.5                      # V3_MM_SKEW_FACTOR
     mm_refresh_interval: float = 5.0                  # V3_MM_REFRESH_INTERVAL (seconds)
     mm_max_drawdown_cents: int = 50000                # V3_MM_MAX_DRAWDOWN ($500 default)
-    mm_admiral_enabled: bool = True                   # V3_MM_ADMIRAL_ENABLED (LLM agent)
-    mm_strategic_interval: float = 300.0              # V3_MM_STRATEGIC_INTERVAL
-    mm_deep_scan_interval: float = 1800.0             # V3_MM_DEEP_SCAN_INTERVAL
+
+    # Alerting Configuration
+    slack_webhook_url: Optional[str] = None          # V3_SLACK_WEBHOOK_URL
+
+    # VPIN Configuration
+    vpin_bucket_size: int = 20                       # V3_VPIN_BUCKET_SIZE
 
     # Sniper Execution Layer Configuration
     sniper_enabled: bool = False                    # V3_SNIPER_ENABLED - master kill switch
@@ -186,8 +189,12 @@ class V3Config:
     # Account Health Configuration
     max_drawdown_pct: float = 25.0                 # V3_MAX_DRAWDOWN_PCT - pause Captain when drawdown exceeds this
 
+    # Captain Edge Gate Configuration
+    min_captain_edge_cents: int = 0                # V3_MIN_CAPTAIN_EDGE_CENTS - reject buy orders with 0 edge (0=permissive)
+
     # LLM Model Configuration (centralized tiers)
     model_captain: str = "claude-sonnet-4-20250514"      # V3_MODEL_CAPTAIN
+    model_captain_fallback: str = "claude-haiku-4-5-20251001"  # V3_MODEL_CAPTAIN_FALLBACK
     model_subagent: str = "claude-haiku-4-5-20251001"    # V3_MODEL_SUBAGENT
     model_utility: str = "gemini-2.0-flash"              # V3_MODEL_UTILITY
     model_embedding: str = "text-embedding-3-small"      # V3_MODEL_EMBEDDING
@@ -380,7 +387,7 @@ class V3Config:
                     f"V3_HYBRID_DATA_MODE=true but missing: {', '.join(missing_prod)}"
                 )
 
-        # Market Maker (Admiral) configuration
+        # Market Maker (QuoteEngine) configuration
         mm_enabled = os.environ.get("V3_MM_ENABLED", "false").lower() == "true"
         mm_event_tickers_str = os.environ.get("V3_MM_EVENT_TICKERS", "")
         mm_event_tickers = [t.strip() for t in mm_event_tickers_str.split(",") if t.strip()]
@@ -391,9 +398,12 @@ class V3Config:
         mm_skew_factor = float(os.environ.get("V3_MM_SKEW_FACTOR", "0.5"))
         mm_refresh_interval = float(os.environ.get("V3_MM_REFRESH_INTERVAL", "5.0"))
         mm_max_drawdown_cents = int(os.environ.get("V3_MM_MAX_DRAWDOWN", "50000"))
-        mm_admiral_enabled = os.environ.get("V3_MM_ADMIRAL_ENABLED", "true").lower() == "true"
-        mm_strategic_interval = float(os.environ.get("V3_MM_STRATEGIC_INTERVAL", "300.0"))
-        mm_deep_scan_interval = float(os.environ.get("V3_MM_DEEP_SCAN_INTERVAL", "1800.0"))
+
+        # Alerting configuration
+        slack_webhook_url = os.environ.get("V3_SLACK_WEBHOOK_URL") or None
+
+        # VPIN configuration
+        vpin_bucket_size = int(os.environ.get("V3_VPIN_BUCKET_SIZE", "20"))
 
         # Sniper execution layer configuration
         sniper_enabled = os.environ.get("V3_SNIPER_ENABLED", "false").lower() == "true"
@@ -438,8 +448,12 @@ class V3Config:
         # Account Health Configuration
         max_drawdown_pct = float(os.environ.get("V3_MAX_DRAWDOWN_PCT", "25.0"))
 
+        # Captain Edge Gate Configuration
+        min_captain_edge_cents = int(os.environ.get("V3_MIN_CAPTAIN_EDGE_CENTS", "0"))
+
         # LLM Model Configuration (centralized tiers)
         model_captain = os.environ.get("V3_MODEL_CAPTAIN", "claude-sonnet-4-20250514")
+        model_captain_fallback = os.environ.get("V3_MODEL_CAPTAIN_FALLBACK", "claude-haiku-4-5-20251001")
         model_subagent = os.environ.get("V3_MODEL_SUBAGENT", "claude-haiku-4-5-20251001")
         model_utility = os.environ.get("V3_MODEL_UTILITY", "gemini-2.0-flash")
         model_embedding = os.environ.get("V3_MODEL_EMBEDDING", "text-embedding-3-small")
@@ -534,9 +548,6 @@ class V3Config:
             mm_skew_factor=mm_skew_factor,
             mm_refresh_interval=mm_refresh_interval,
             mm_max_drawdown_cents=mm_max_drawdown_cents,
-            mm_admiral_enabled=mm_admiral_enabled,
-            mm_strategic_interval=mm_strategic_interval,
-            mm_deep_scan_interval=mm_deep_scan_interval,
             single_arb_enabled=single_arb_enabled,
             single_arb_event_tickers=single_arb_event_tickers,
             single_arb_poll_interval=single_arb_poll_interval,
@@ -547,7 +558,9 @@ class V3Config:
             single_arb_captain_enabled=single_arb_captain_enabled,
             single_arb_order_ttl=single_arb_order_ttl,
             single_arb_cheval_model=single_arb_cheval_model,
+            min_captain_edge_cents=min_captain_edge_cents,
             model_captain=model_captain,
+            model_captain_fallback=model_captain_fallback,
             model_subagent=model_subagent,
             model_utility=model_utility,
             model_embedding=model_embedding,
@@ -557,6 +570,8 @@ class V3Config:
             prod_ws_url=prod_ws_url,
             prod_api_key_id=prod_api_key_id,
             prod_private_key_content=prod_private_key_content,
+            slack_webhook_url=slack_webhook_url,
+            vpin_bucket_size=vpin_bucket_size,
             sniper_enabled=sniper_enabled,
             sniper_max_position=sniper_max_position,
             sniper_max_capital=sniper_max_capital,
@@ -685,7 +700,6 @@ class V3Config:
         # Log MM config
         if mm_enabled:
             logger.info(f"  - Market Maker: ENABLED (events={','.join(mm_event_tickers)}, spread={mm_base_spread_cents}c, size={mm_quote_size})")
-            logger.info(f"    - Admiral: {'ENABLED' if mm_admiral_enabled else 'DISABLED'} (strategic={mm_strategic_interval}s, deep_scan={mm_deep_scan_interval}s)")
             logger.info(f"    - Risk: max_pos={mm_max_position}, max_exposure={mm_max_event_exposure}, drawdown=${mm_max_drawdown_cents/100:.0f}")
         else:
             logger.info(f"  - Market Maker: DISABLED")

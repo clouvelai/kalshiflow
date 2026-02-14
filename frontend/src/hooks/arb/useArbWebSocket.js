@@ -12,6 +12,8 @@ import { useState, useEffect, useRef, useCallback } from 'react';
  *   attention_snapshot, auto_action_fired,
  *   captain_cycle_start, captain_cycle_complete, captain_config,
  *   lifecycle_timeline, lifecycle_event_update, lifecycle_market_status,
+ *   mm_snapshot, mm_market_update, mm_inventory_update, mm_quote_placed,
+ *   mm_quote_filled, mm_quotes_pulled, mm_requote_cycle, mm_performance_snapshot,
  *   connection, ping/pong
  */
 
@@ -76,6 +78,12 @@ export const useArbWebSocket = () => {
   // Lifecycle timeline and tracked events
   const [lifecycleTimeline, setLifecycleTimeline] = useState([]);
   const [trackedEvents, setTrackedEvents] = useState(new Map());
+  // Market Maker state
+  const [mmSnapshot, setMmSnapshot] = useState(null);
+  const [mmQuoteState, setMmQuoteState] = useState(null);
+  const [mmInventory, setMmInventory] = useState([]);
+  const [mmTradeLog, setMmTradeLog] = useState([]);
+  const [mmPerformance, setMmPerformance] = useState(null);
 
   const wsRef = useRef(null);
   const reconnectTimeoutRef = useRef(null);
@@ -502,6 +510,81 @@ export const useArbWebSocket = () => {
         break;
       }
 
+      // --- Market Maker messages ---
+      case 'mm_snapshot': {
+        if (data.data) {
+          setMmSnapshot(data.data);
+          if (data.data.quote_state) {
+            setMmQuoteState(data.data.quote_state);
+          }
+        }
+        break;
+      }
+
+      case 'mm_market_update':
+        // Incremental market data — handled via next mm_snapshot
+        break;
+
+      case 'mm_inventory_update': {
+        if (data.data?.markets) {
+          setMmInventory(data.data.markets);
+        }
+        break;
+      }
+
+      case 'mm_quote_placed':
+      case 'mm_quote_filled': {
+        if (data.data) {
+          setMmTradeLog(prev => [{
+            type: data.type.replace('mm_', ''),
+            ...data.data,
+            timestamp: data.data.timestamp || Date.now() / 1000,
+          }, ...prev].slice(0, 200));
+        }
+        break;
+      }
+
+      case 'mm_quotes_pulled': {
+        if (data.data) {
+          setMmQuoteState(prev => ({
+            ...prev,
+            quotes_pulled: true,
+            pull_reason: data.data.reason || '',
+          }));
+          setMmTradeLog(prev => [{
+            type: 'quotes_pulled',
+            cancelled: data.data.cancelled || 0,
+            reason: data.data.reason || '',
+            timestamp: Date.now() / 1000,
+          }, ...prev].slice(0, 200));
+        }
+        break;
+      }
+
+      case 'mm_requote_cycle': {
+        if (data.data) {
+          setMmQuoteState(prev => ({
+            ...prev,
+            active_quotes: data.data.active_quotes || 0,
+            total_requote_cycles: data.data.cycle || 0,
+            spread_multiplier: data.data.spread_multiplier || 1,
+            quotes_pulled: data.data.quotes_pulled ?? prev?.quotes_pulled ?? false,
+          }));
+        }
+        break;
+      }
+
+      case 'mm_performance_snapshot': {
+        if (data.data) {
+          setMmPerformance(data.data);
+        }
+        break;
+      }
+
+      case 'mm_balance_update':
+        // Balance updates handled via trading_state
+        break;
+
       default:
         break;
     }
@@ -549,6 +632,11 @@ export const useArbWebSocket = () => {
         setStartupMessages([]);
         setLifecycleTimeline([]);
         setTrackedEvents(new Map());
+        setMmSnapshot(null);
+        setMmQuoteState(null);
+        setMmInventory([]);
+        setMmTradeLog([]);
+        setMmPerformance(null);
       };
 
       ws.onmessage = (event) => {
@@ -638,6 +726,11 @@ export const useArbWebSocket = () => {
     tavilyBudget,
     lifecycleTimeline,
     trackedEvents,
+    mmSnapshot,
+    mmQuoteState,
+    mmInventory,
+    mmTradeLog,
+    mmPerformance,
   };
 };
 

@@ -71,6 +71,14 @@ class SingleArbCoordinator:
         self._auto_actions = None  # AutoActionManager
         self._market_gateway = None  # Prod gateway for hybrid data mode
 
+        # Market maker (QuoteEngine folded into Captain's ecosystem)
+        self._mm_index = None       # MMIndex
+        self._mm_monitor = None     # MMMonitor
+        self._quote_engine = None   # QuoteEngine
+        self._mm_attention = None   # MMAttentionRouter
+        self._mm_order_group_id: Optional[str] = None
+        self._mm_position_sync_task: Optional[asyncio.Task] = None
+
         self._discovery = None  # SeriesDiscovery
         self._order_group_id: Optional[str] = None
         self._understanding_builder: Optional[UnderstandingBuilder] = None
@@ -405,14 +413,15 @@ class SingleArbCoordinator:
                         yes_mid=yes_mid,
                     )
                     if swing and self._attention_router:
-                        from .attention import AttentionItem
+                        from .models import AttentionItem
                         score = min(95, 65 + swing.change_cents * 3)
                         self._attention_router.inject_item(AttentionItem(
                             event_ticker=event_ticker,
-                            signal_type="live_swing",
+                            market_ticker=market_ticker,
+                            category="live_swing",
                             score=score,
-                            reason=f"{swing.direction} {swing.change_cents:.0f}c swing on {market_ticker}",
-                            metadata={"swing_source": "live", "change_cents": swing.change_cents},
+                            summary=f"{swing.direction} {swing.change_cents:.0f}c swing on {market_ticker}",
+                            data={"swing_source": "live", "change_cents": swing.change_cents},
                         ))
 
                 self._event_bus.subscribe(EventType.ORDERBOOK_SNAPSHOT, _on_bbo_for_swing)
@@ -424,6 +433,14 @@ class SingleArbCoordinator:
             logger.warning(f"[ATTENTION] AttentionRouter setup failed, Captain will use legacy mode: {e}")
             self._attention_router = None
             self._auto_actions = None
+
+        # 9d. Setup QuoteEngine (MM folded into Captain) if enabled
+        if self._config.mm_enabled:
+            try:
+                await self._setup_quote_engine()
+                await self._broadcast_startup("QuoteEngine started", 8, 11)
+            except Exception as e:
+                logger.error(f"[MM] QuoteEngine setup failed: {e}", exc_info=True)
 
         # 10. Check exchange status before starting Captain
         is_exchange_active, exchange_error = await self._check_exchange_status()
@@ -545,10 +562,10 @@ class SingleArbCoordinator:
         """Stop the single-arb system."""
         self._running = False
 
-        # Cancel all background tasks
+        # Cancel all background tasks (including MM position sync)
         for attr in ("_order_tracker_task", "_exchange_monitor_task",
                       "_news_impact_task", "_deferred_init_task",
-                      "_decision_backfill_task"):
+                      "_decision_backfill_task", "_mm_position_sync_task"):
             task = getattr(self, attr, None)
             if task:
                 task.cancel()
@@ -577,6 +594,14 @@ class SingleArbCoordinator:
             await self._attention_router.stop()
         if self._health_service:
             await self._health_service.stop()
+        # Stop MM components
+        if self._quote_engine:
+            await self._quote_engine.stop()
+            logger.info("[MM] QuoteEngine stopped")
+        if self._mm_monitor:
+            await self._mm_monitor.stop()
+            logger.info("[MM] MMMonitor stopped")
+
         if self._sniper:
             await self._sniper.stop()
         if self._captain:
@@ -603,15 +628,19 @@ class SingleArbCoordinator:
         if getattr(self, "_trading_session", None):
             self._trading_session.reset()
 
-        # Reset order group (cancels all resting orders in group)
-        if getattr(self, "_order_group_id", None):
-            try:
-                client = self._get_trading_client()
-                if client:
-                    await client.reset_order_group(self._order_group_id)
-                    logger.info(f"[SINGLE_ARB] Order group reset: {self._order_group_id[:8]}...")
-            except Exception as e:
-                logger.debug(f"Order group reset failed: {e}")
+        # Reset order groups (cancels all resting orders in groups)
+        client = self._get_trading_client()
+        for group_id, label in [
+            (getattr(self, "_order_group_id", None), "Captain"),
+            (getattr(self, "_mm_order_group_id", None), "MM"),
+        ]:
+            if group_id:
+                try:
+                    if client:
+                        await client.reset_order_group(group_id)
+                        logger.info(f"[SINGLE_ARB] {label} order group reset: {group_id[:8]}...")
+                except Exception as e:
+                    logger.debug(f"{label} order group reset failed: {e}")
 
         logger.info("[SINGLE_ARB:SHUTDOWN] Single-event arb system stopped")
 
@@ -1025,6 +1054,14 @@ class SingleArbCoordinator:
                 if self._sniper:
                     self._release_sniper_capital()
 
+                # Reconcile sniper capital every poll (pure Python, zero I/O)
+                if self._sniper and hasattr(self._sniper, "reconcile_capital"):
+                    resting_ids = {
+                        oid for oid, state in self._tracked_orders.items()
+                        if state.get("status") in ("resting", "partial", "placed")
+                    }
+                    self._sniper.reconcile_capital(resting_ids)
+
                 # Periodic cleanup every ~5 minutes (20 iterations * 15s)
                 cleanup_counter += 1
                 if cleanup_counter >= 20:
@@ -1039,9 +1076,23 @@ class SingleArbCoordinator:
                 if event_cleanup_counter >= 40:
                     event_cleanup_counter = 0
                     if self._index:
+                        # Collect tickers before cleanup for understanding cache eviction
+                        settled_tickers = set()
+                        for et, ev in self._index.events.items():
+                            if not ev.markets or all(
+                                m.status in ("closed", "settled", "finalized")
+                                for m in ev.markets.values()
+                            ):
+                                settled_tickers.add(et)
+
                         removed = self._index.cleanup_settled_events()
                         if removed:
                             logger.info(f"[ORDER_TRACKER] Cleaned {removed} settled events")
+                            # Clean up understanding cache for evicted events
+                            if self._understanding_builder and settled_tickers:
+                                cleaned = self._understanding_builder.cleanup_cache(settled_tickers)
+                                if cleaned:
+                                    logger.info(f"[ORDER_TRACKER] Cleaned {cleaned} understanding caches")
 
             except asyncio.CancelledError:
                 break
@@ -1758,6 +1809,199 @@ class SingleArbCoordinator:
         )
         set_context(ctx)
         logger.info("[TOOLS] ToolContext wired (12 tools, single agent)")
+
+    # ------------------------------------------------------------------ #
+    #  QuoteEngine setup (MM folded into Captain)                         #
+    # ------------------------------------------------------------------ #
+
+    async def _setup_quote_engine(self) -> None:
+        """Create and start QuoteEngine, MMIndex, MMMonitor, MMAttentionRouter.
+
+        Called from start() when mm_enabled=True.
+        Folds the deterministic QuoteEngine into Captain's ecosystem.
+        """
+        from ..market_maker.index import MMIndex
+        from ..market_maker.monitor import MMMonitor
+        from ..market_maker.attention import MMAttentionRouter
+        from ..market_maker.quote_engine import QuoteEngine
+        from ..market_maker.models import QuoteConfig
+        from .tools import get_context
+
+        client = self._get_trading_client()
+        if not client:
+            logger.warning("[MM] No trading client — skipping QuoteEngine setup")
+            return
+
+        # 1. Create MMIndex (wraps its own EventArbIndex — coexists with Captain's index)
+        self._mm_index = MMIndex(
+            fee_per_contract_cents=getattr(self._config, "single_arb_fee_per_contract", 1),
+        )
+
+        # 2. Load MM events via REST
+        mm_tickers = self._config.mm_event_tickers
+        loaded = 0
+        market_client = getattr(self, "_market_client", client)
+        for event_ticker in mm_tickers:
+            try:
+                meta = await self._mm_index.load_event(event_ticker, market_client)
+                if meta:
+                    loaded += 1
+                    logger.info(f"[MM] Loaded {event_ticker}: {len(meta.markets)} markets")
+            except Exception as e:
+                logger.warning(f"[MM] Failed to load event {event_ticker}: {e}")
+
+        if loaded == 0:
+            logger.warning("[MM] No MM events loaded — skipping QuoteEngine")
+            return
+
+        # 3. Subscribe MM market tickers to WS channels
+        mm_market_tickers = list(self._mm_index.market_tickers)
+        if mm_market_tickers:
+            ws_mux = self._market_gateway.get_ws() if self._market_gateway else self._gateway.get_ws()
+            for channel in ("orderbook_delta", "ticker", "trade"):
+                await ws_mux.subscribe_tickers(channel, mm_market_tickers)
+            logger.info(f"[MM] Subscribed {len(mm_market_tickers)} MM tickers to WS")
+
+        # 4. Create separate MM order group
+        try:
+            resp = await client.create_order_group(contracts_limit=10000)
+            self._mm_order_group_id = resp.get("order_group_id")
+            if self._mm_order_group_id:
+                logger.info(f"[MM] Order group created: {self._mm_order_group_id[:8]}...")
+                # Register with AccountHealthService as protected
+                if self._health_service:
+                    self._health_service.register_order_group(self._mm_order_group_id)
+        except Exception as e:
+            logger.warning(f"[MM] Order group creation failed: {e}")
+
+        # 5. Create QuoteConfig from V3_MM_* config fields
+        quote_config = QuoteConfig(
+            enabled=True,
+            base_spread_cents=self._config.mm_base_spread_cents,
+            quote_size=self._config.mm_quote_size,
+            skew_factor=self._config.mm_skew_factor,
+            max_position=self._config.mm_max_position,
+            max_event_exposure=self._config.mm_max_event_exposure,
+            refresh_interval=self._config.mm_refresh_interval,
+        )
+
+        # 6. Create QuoteEngine
+        self._quote_engine = QuoteEngine(
+            index=self._mm_index,
+            gateway=self._gateway,
+            config=quote_config,
+            max_drawdown_cents=self._config.mm_max_drawdown_cents,
+            order_ttl=getattr(self._config, "single_arb_order_ttl", 60),
+            ws_broadcast=self._broadcast_mm,
+            order_group_id=self._mm_order_group_id,
+        )
+
+        # 7. Create MMAttentionRouter (bridges signals to Captain)
+        captain_inject = self._attention_router.inject_item if self._attention_router else None
+        self._mm_attention = MMAttentionRouter(
+            captain_inject=captain_inject,
+        )
+
+        # 8. Create MMMonitor (EventBus → MMIndex bridge)
+        self._mm_monitor = MMMonitor(
+            index=self._mm_index,
+            event_bus=self._event_bus,
+            trading_client=market_client,
+            config=self._config,
+            attention_router=self._mm_attention,
+            broadcast_callback=self._broadcast_mm,
+            quote_engine=self._quote_engine,
+        )
+
+        # 9. Prefetch orderbooks via REST
+        for ticker in mm_market_tickers:
+            try:
+                ob = await market_client.get_orderbook(ticker)
+                if ob:
+                    self._mm_index.on_orderbook_update(ticker, ob.yes or [], ob.no or [], source="api")
+            except Exception:
+                pass
+        logger.info(f"[MM] Prefetched {len(mm_market_tickers)} orderbooks")
+
+        # 10. Start monitor + quote engine
+        await self._mm_monitor.start()
+        balance = 0
+        try:
+            bal_resp = await self._gateway.get_balance()
+            balance = bal_resp.balance
+        except Exception:
+            pass
+        self._quote_engine.start(balance_cents=balance)
+
+        # 11. Wire into ToolContext
+        ctx = get_context()
+        if ctx:
+            ctx.quote_engine = self._quote_engine
+            ctx.mm_index = self._mm_index
+            ctx.quote_config = quote_config
+
+        # 12. Start position sync loop
+        self._mm_position_sync_task = asyncio.create_task(self._mm_position_sync_loop())
+
+        logger.info(
+            f"[MM] QuoteEngine started: {loaded} events, "
+            f"{len(mm_market_tickers)} markets, "
+            f"spread={quote_config.base_spread_cents}c, size={quote_config.quote_size}"
+        )
+
+    async def _on_mm_fill(
+        self,
+        market_ticker: str,
+        side: str,
+        action: str,
+        price_cents: int,
+        count: int,
+        order_id: str = "",
+    ) -> None:
+        """Handle fill event for MM markets. Routes to QuoteEngine + MMAttentionRouter."""
+        if not self._mm_index:
+            return
+        if market_ticker not in self._mm_index.market_tickers:
+            return
+
+        # Forward to QuoteEngine (updates inventory, telemetry, clears filled quote)
+        if self._quote_engine:
+            self._quote_engine.on_fill(market_ticker, side, action, price_cents, count)
+
+        # Signal to attention router
+        if self._mm_attention:
+            event_ticker = self._mm_index.get_event_for_ticker(market_ticker) or ""
+            inv = self._mm_index.get_inventory(market_ticker)
+            self._mm_attention.on_fill(
+                event_ticker, market_ticker, side, price_cents, count, inv.position
+            )
+
+        logger.info(
+            f"[MM_FILL] {market_ticker}: {action} {count} {side} @ {price_cents}c"
+        )
+
+    async def _mm_position_sync_loop(self) -> None:
+        """Periodically sync MM balance tracking."""
+        while self._running:
+            try:
+                await asyncio.sleep(30)
+                if self._quote_engine:
+                    try:
+                        bal_resp = await self._gateway.get_balance()
+                        self._quote_engine.update_balance(bal_resp.balance)
+                    except Exception:
+                        pass
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.debug(f"[MM] Position sync error: {e}")
+
+    async def _broadcast_mm(self, msg_type: str, data: dict) -> None:
+        """Broadcast MM-specific messages to frontend."""
+        await self._broadcast({
+            "type": msg_type,
+            "data": data,
+        })
 
     # ------------------------------------------------------------------ #
     #  Broadcast helpers                                                  #

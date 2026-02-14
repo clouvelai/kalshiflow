@@ -1,5 +1,5 @@
 import React, { memo } from 'react';
-import { Activity, Wifi, WifiOff, Radio, Pause, Play, AlertTriangle, CheckCircle, Database, ArrowRightLeft, Search } from 'lucide-react';
+import { Activity, Wifi, WifiOff, Radio, Pause, Play, AlertTriangle, CheckCircle, Database, ArrowRightLeft, Search, TrendingUp } from 'lucide-react';
 import { HEADER_HEIGHT } from '../utils/styleConstants';
 
 const FeedStatusBadge = memo(({ label, count, ageSeconds, isActive }) => {
@@ -112,7 +112,43 @@ const TavilyBudgetBadge = memo(({ tavilyBudget }) => {
 });
 TavilyBudgetBadge.displayName = 'TavilyBudgetBadge';
 
-const ArbHeader = ({ connectionStatus, systemState, feedStats, captainPaused, onCaptainPauseToggle, exchangeStatus, gatewayConfig, tavilyBudget }) => {
+const MMStatusBadge = memo(({ mmQuoteState }) => {
+  if (!mmQuoteState) return null;
+
+  const isPulled = mmQuoteState.quotes_pulled;
+  const activeQuotes = mmQuoteState.active_quotes || 0;
+  const multiplier = mmQuoteState.spread_multiplier || 1;
+
+  if (isPulled) {
+    return (
+      <div
+        className="flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-red-900/15 border border-red-500/15"
+        title="Market Maker: Quotes pulled"
+      >
+        <TrendingUp className="w-2.5 h-2.5 text-red-400/70" />
+        <span className="text-[8px] font-mono font-semibold text-red-400/80 uppercase">MM</span>
+        <span className="text-[8px] font-mono text-red-400/60">Pull</span>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-fuchsia-900/15 border border-fuchsia-500/15"
+      title={`Market Maker: ${activeQuotes} active quotes${multiplier > 1 ? ` (${multiplier}x spread)` : ''}`}
+    >
+      <TrendingUp className="w-2.5 h-2.5 text-fuchsia-400/70" />
+      <span className="text-[8px] font-mono font-semibold text-fuchsia-400/80 uppercase">MM</span>
+      <span className="text-[9px] font-mono text-fuchsia-400/60 tabular-nums">{activeQuotes}</span>
+      {multiplier > 1 && (
+        <span className="text-[8px] font-mono text-amber-400/60 tabular-nums">{multiplier.toFixed(1)}x</span>
+      )}
+    </div>
+  );
+});
+MMStatusBadge.displayName = 'MMStatusBadge';
+
+const ArbHeader = ({ connectionStatus, systemState, feedStats, captainPaused, onCaptainPauseToggle, exchangeStatus, gatewayConfig, tavilyBudget, mmQuoteState }) => {
   const isConnected = connectionStatus === 'connected';
   const stateLabel = (systemState || 'initializing').replace(/_/g, ' ').toUpperCase();
   const isActive = exchangeStatus?.active ?? true;
@@ -142,6 +178,7 @@ const ArbHeader = ({ connectionStatus, systemState, feedStats, captainPaused, on
             Arb
           </span>
           <GatewaySourceBadge gatewayConfig={gatewayConfig} />
+          <MMStatusBadge mmQuoteState={mmQuoteState} />
         </div>
 
         {/* Right: controls */}

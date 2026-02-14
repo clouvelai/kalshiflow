@@ -8,7 +8,6 @@ import TradeFlowRiver from './components/TradeFlowRiver';
 import TopTradesList from './components/TopTradesList';
 import FAQ from './components/FAQ';
 import { ArbDashboard } from './components/arb';
-import { MMDashboard } from './components/mm';
 
 const MainDashboard = () => {
   const {
@@ -88,10 +87,6 @@ function App() {
         <Route
           path="/arb"
           element={<ArbDashboard />}
-        />
-        <Route
-          path="/mm"
-          element={<MMDashboard />}
         />
       </Routes>
     </Router>

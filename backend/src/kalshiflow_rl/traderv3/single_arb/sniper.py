@@ -149,6 +149,7 @@ class SniperAction:
     legs_attempted: int = 0
     legs_filled: int = 0
     order_ids: List[str] = field(default_factory=list)
+    order_leg_map: Dict[str, Dict] = field(default_factory=dict)  # order_id -> leg info
     total_cost_cents: int = 0
     error: Optional[str] = None
     error_type: Optional[str] = None  # "timeout", "api_error", "rate_limit", "partial_unwind"
@@ -194,6 +195,7 @@ class SniperState:
     _cached_balance_cents: Optional[int] = None
     _balance_cached_at: float = 0.0
     active_order_ids: Set[str] = field(default_factory=set)
+    order_costs: Dict[str, int] = field(default_factory=dict)  # order_id -> cost in cents
     unhedged_positions: List[Dict] = field(default_factory=list)  # Filled legs from partial arbs
     last_trade_at: Optional[float] = None
     last_rejection_reason: Optional[str] = None
@@ -569,6 +571,12 @@ class Sniper:
                 order_id, cost = result
                 leg = opportunity.legs[i]
                 action.order_ids.append(order_id)
+                action.order_leg_map[order_id] = {
+                    "ticker": leg.ticker,
+                    "side": leg.side,
+                    "contracts": contracts_per_leg,
+                    "price_cents": leg.price_cents,
+                }
                 total_cost += cost
                 filled += 1
                 successful_order_ids.append(order_id)
@@ -576,6 +584,7 @@ class Sniper:
                 # Track in session for attribution
                 self._session.sniper_order_ids.add(order_id)
                 self.state.active_order_ids.add(order_id)
+                self.state.order_costs[order_id] = cost
 
                 # Register with Captain's order tracking (enables polling, capital release, fills)
                 if self._register_order:
@@ -595,7 +604,7 @@ class Sniper:
                 f"[SNIPER:S1_ARB] PARTIAL {opportunity.event_ticker} {opportunity.direction} "
                 f"legs={filled}/{len(opportunity.legs)} — UNWINDING successful legs"
             )
-            cancelled = await self._unwind_legs(successful_order_ids, opportunity)
+            cancelled = await self._unwind_legs(successful_order_ids, opportunity, action)
             action.unwound = True
             action.error = f"partial_fill_unwound (cancelled={cancelled}/{filled})"
             action.error_type = "partial_unwind"
@@ -660,7 +669,7 @@ class Sniper:
 
         return action
 
-    async def _unwind_legs(self, order_ids: List[str], opportunity: "ArbOpportunity" = None) -> int:
+    async def _unwind_legs(self, order_ids: List[str], opportunity: "ArbOpportunity" = None, action: "SniperAction" = None) -> int:
         """Cancel or track successfully placed legs after partial fill.
 
         For each order: check if it has already filled. If resting, cancel it.
@@ -676,7 +685,7 @@ class Sniper:
             else:
                 # Order couldn't be cancelled — likely already filled
                 # Track as unhedged position for Captain visibility
-                leg_info = self._find_leg_for_order(oid, opportunity)
+                leg_info = self._find_leg_for_order(oid, opportunity, action)
                 self.state.unhedged_positions.append({
                     "order_id": oid,
                     "ticker": leg_info.get("ticker", ""),
@@ -693,15 +702,28 @@ class Sniper:
                 )
         return cancelled
 
-    def _find_leg_for_order(self, order_id: str, opportunity: "ArbOpportunity" = None) -> Dict:
-        """Find leg details for an order ID from the opportunity."""
-        if not opportunity:
+    def _find_leg_for_order(self, order_id: str, opportunity: "ArbOpportunity" = None, action: "SniperAction" = None) -> Dict:
+        """Find leg details for an order ID.
+
+        Checks the action's order_leg_map first (populated during _execute_arb).
+        Falls back to opportunity legs if map not available.
+        """
+        # Primary: lookup from action's order_leg_map
+        if action and order_id in action.order_leg_map:
+            return action.order_leg_map[order_id]
+
+        # Check recent actions for the mapping
+        for recent in reversed(self.state.recent_actions):
+            if order_id in recent.order_leg_map:
+                return recent.order_leg_map[order_id]
+
+        # Fallback: return empty if no opportunity
+        if not opportunity or not opportunity.legs:
             return {}
-        # Match by position in action order_ids (best effort)
-        for leg in opportunity.legs:
-            # We don't have a direct order_id→leg mapping, return the leg info
-            return {"ticker": leg.ticker, "side": leg.side, "contracts": 0, "price_cents": leg.price_cents}
-        return {}
+
+        # Last resort: return first leg info (legacy behavior)
+        leg = opportunity.legs[0]
+        return {"ticker": leg.ticker, "side": leg.side, "contracts": 0, "price_cents": leg.price_cents}
 
     async def _cancel_leg_safe(self, order_id: str) -> bool:
         """Cancel a single order with timeout. Returns True on success."""
@@ -787,6 +809,78 @@ class Sniper:
             "errors": errors,
             "reason": reason,
         }
+
+    # ------------------------------------------------------------------
+    # Stale event pruning
+    # ------------------------------------------------------------------
+
+    def prune_stale_events(self, active_event_tickers: Set[str]) -> int:
+        """Remove entries from event-keyed dicts for events no longer active.
+
+        Prevents unbounded growth of _event_last_trade and _last_scale_log
+        over weeks of operation.
+
+        Args:
+            active_event_tickers: Set of event tickers currently in the index.
+
+        Returns:
+            Number of stale entries removed.
+        """
+        removed = 0
+
+        stale_events = set(self.state._event_last_trade.keys()) - active_event_tickers
+        for et in stale_events:
+            del self.state._event_last_trade[et]
+            removed += 1
+
+        stale_scale = set(self._last_scale_log.keys()) - active_event_tickers
+        for et in stale_scale:
+            del self._last_scale_log[et]
+            removed += 1
+
+        if removed > 0:
+            logger.info(f"[SNIPER:PRUNE] Removed {removed} stale event entries")
+
+        return removed
+
+    # ------------------------------------------------------------------
+    # Capital reconciliation
+    # ------------------------------------------------------------------
+
+    def reconcile_capital(self, resting_order_ids: Set[str]) -> None:
+        """Reconcile capital_active against actually resting orders.
+
+        Orders that expired via TTL, settled, or were cancelled by exchange
+        cause permanent upward drift in capital_active. This method corrects
+        that by recalculating from only still-resting sniper orders.
+
+        Args:
+            resting_order_ids: Set of order IDs currently resting on the exchange.
+        """
+        # Find sniper orders that are no longer resting
+        gone = self.state.active_order_ids - resting_order_ids
+        if not gone:
+            return
+
+        old_capital = self.state.capital_active
+
+        # Remove gone orders from tracking
+        for oid in gone:
+            self.state.active_order_ids.discard(oid)
+            self.state.order_costs.pop(oid, None)
+
+        # Recalculate capital_active from remaining orders
+        self.state.capital_active = sum(
+            self.state.order_costs.get(oid, 0)
+            for oid in self.state.active_order_ids
+        )
+
+        new_capital = self.state.capital_active
+        if old_capital != new_capital:
+            logger.info(
+                f"SNIPER reconcile_capital: was={old_capital}, now={new_capital}, "
+                f"released={old_capital - new_capital}"
+            )
 
     # ------------------------------------------------------------------
     # Health

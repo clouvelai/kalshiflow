@@ -608,6 +608,35 @@ class TestBuildStrategicContext:
         result = builder.build_strategic_context(portfolio, [])
         assert "HEALTH:" not in result
 
+    def test_contains_decision_accuracy(self):
+        builder = self._make_builder()
+        portfolio = PortfolioState(balance_cents=50000, balance_dollars=500.0)
+        accuracy = {
+            "total_decisions": 12,
+            "decisions_with_outcomes": 8,
+            "direction_correct_count": 6,
+            "direction_accuracy_pct": 75.0,
+            "avg_hypothetical_pnl": 3.2,
+            "would_have_filled_pct": 83.0,
+        }
+        result = builder.build_strategic_context(portfolio, [], decision_accuracy=accuracy)
+        assert "DECISIONS (24h):" in result
+        assert "12 orders" in result
+        assert "6/8 direction-correct" in result
+        assert "75%" in result
+
+    def test_no_decisions_omits_section(self):
+        builder = self._make_builder()
+        portfolio = PortfolioState(balance_cents=50000, balance_dollars=500.0)
+        result = builder.build_strategic_context(portfolio, [], decision_accuracy={"total_decisions": 0})
+        assert "DECISIONS" not in result
+
+    def test_none_decision_accuracy_omits_section(self):
+        builder = self._make_builder()
+        portfolio = PortfolioState(balance_cents=50000, balance_dollars=500.0)
+        result = builder.build_strategic_context(portfolio, [], decision_accuracy=None)
+        assert "DECISIONS" not in result
+
 
 # ===========================================================================
 # TestBuildDeepScanContext
@@ -740,6 +769,30 @@ class TestBuildDeepScanContext:
         portfolio = PortfolioState(balance_cents=50000, balance_dollars=500.0)
         result = builder.build_deep_scan_context(market_state, portfolio, market_movers=None)
         assert "NEWS_IMPACT" not in result
+
+    def test_contains_decision_accuracy(self):
+        builder = self._make_builder()
+        market_state = builder.build_market_state()
+        portfolio = PortfolioState(balance_cents=50000, balance_dollars=500.0)
+        accuracy = {
+            "total_decisions": 20,
+            "decisions_with_outcomes": 15,
+            "direction_correct_count": 10,
+            "direction_accuracy_pct": 66.7,
+            "avg_hypothetical_pnl": -1.5,
+            "would_have_filled_pct": 90.0,
+        }
+        result = builder.build_deep_scan_context(market_state, portfolio, decision_accuracy=accuracy)
+        assert "DECISIONS (24h):" in result
+        assert "20 orders" in result
+        assert "10/15 direction-correct" in result
+
+    def test_no_decisions_omits_section_deep_scan(self):
+        builder = self._make_builder()
+        market_state = builder.build_market_state()
+        portfolio = PortfolioState(balance_cents=50000, balance_dollars=500.0)
+        result = builder.build_deep_scan_context(market_state, portfolio, decision_accuracy=None)
+        assert "DECISIONS" not in result
 
 
 # ===========================================================================

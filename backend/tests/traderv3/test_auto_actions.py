@@ -87,7 +87,7 @@ def make_settlement_item(
             "ticker": ticker,
             "side": side,
             "quantity": quantity,
-            "time_to_close_hours": ttc_hours,
+            "ttc_hours": ttc_hours,
         },
     )
 

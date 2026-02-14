@@ -11,12 +11,15 @@ from collections import Counter, deque
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from ..market_maker.fee_calculator import taker_fee
+
 logger = logging.getLogger("kalshiflow_rl.traderv3.single_arb.index")
 
 MAX_RECENT_TRADES = 50
 MAX_ORDERBOOK_LEVELS = 5
 MAX_BBO_HISTORY = 60        # Ring buffer for BBO snapshots (OFI computation)
-VPIN_BUCKET_SIZE = 50       # Volume per VPIN bucket (contracts)
+VPIN_BUCKET_SIZE = 20       # Volume per VPIN bucket (contracts, tuned for Kalshi's thin markets)
+_vpin_bucket_size_override: Optional[int] = None  # Set via set_vpin_bucket_size()
 MAX_VPIN_BUCKETS = 20       # Rolling window of VPIN buckets
 
 # Microstructure constants
@@ -27,6 +30,18 @@ SWEEP_WINDOW_SECONDS = 2.0  # Max time window for sweep detection
 SWEEP_MIN_TRADES = 5        # Min trades in window to qualify as sweep
 SWEEP_MIN_LEVELS = 2        # Min price levels crossed for sweep
 OFI_EMA_ALPHA = 0.3         # EMA smoothing for OFI
+
+
+def get_vpin_bucket_size() -> int:
+    """Return the effective VPIN bucket size (override or default)."""
+    return _vpin_bucket_size_override if _vpin_bucket_size_override is not None else VPIN_BUCKET_SIZE
+
+
+def set_vpin_bucket_size(size: int) -> None:
+    """Set a custom VPIN bucket size. Called by coordinator at startup with config value."""
+    global _vpin_bucket_size_override
+    _vpin_bucket_size_override = size
+    logger.info(f"VPIN bucket size set to {size}")
 
 
 @dataclass
@@ -497,7 +512,7 @@ class MarketMeta:
             self._vpin_sell_bucket += trade_count
 
         bucket_volume = self._vpin_buy_bucket + self._vpin_sell_bucket
-        if bucket_volume >= VPIN_BUCKET_SIZE:
+        if bucket_volume >= get_vpin_bucket_size():
             # Bucket complete — compute VPIN for this bucket
             if bucket_volume > 0:
                 bucket_vpin = abs(self._vpin_buy_bucket - self._vpin_sell_bucket) / bucket_volume
@@ -854,7 +869,12 @@ class EventMeta:
         sum_ask = self.market_sum_ask()
         if sum_ask is None:
             return None
-        total_fees = fee_per_contract * len(self.markets)
+        # Price-dependent fees: fee based on YES ask price per market
+        markets_with_ask = [m for m in self.markets.values() if m.yes_ask is not None]
+        if markets_with_ask:
+            total_fees = sum(taker_fee(m.yes_ask) for m in markets_with_ask)
+        else:
+            total_fees = fee_per_contract * len(self.markets)
         return 100 - sum_ask - total_fees
 
     def short_edge(self, fee_per_contract: int = 1) -> Optional[float]:
@@ -864,7 +884,12 @@ class EventMeta:
         sum_bid = self.market_sum_bid()
         if sum_bid is None:
             return None
-        total_fees = fee_per_contract * len(self.markets)
+        # Price-dependent fees: fee on the NO price (100 - yes_bid) per market
+        markets_with_bid = [m for m in self.markets.values() if m.yes_bid is not None]
+        if markets_with_bid:
+            total_fees = sum(taker_fee(100 - m.yes_bid) for m in markets_with_bid)
+        else:
+            total_fees = fee_per_contract * len(self.markets)
         return sum_bid - 100 - total_fees
 
     def deviation(self) -> Optional[float]:
@@ -913,28 +938,31 @@ class EventMeta:
         min_fillable = target_contracts
         total_slippage = 0
         partial_legs = 0
+        total_fees = 0.0  # Accumulate price-dependent fees per leg
 
         for m in self.markets.values():
             if direction == "long":
-                levels = m.yes_levels  # bid levels in [[price, size], ...]
                 # For buying YES, we need the ask side = no_levels inverted
                 ask_levels = [[100 - lv[0], lv[1]] for lv in m.no_levels] if m.no_levels else []
                 bbo = m.yes_ask
             else:
-                # For buying NO, we use no_levels directly
-                ask_levels = m.no_levels[:] if m.no_levels else []
+                # For buying NO, we need the NO ask side = YES bid levels inverted
+                # no_levels are NO bids (what someone will pay for NO), not what we can buy at
+                ask_levels = [[100 - lv[0], lv[1]] for lv in (m.yes_levels or [])]
                 bbo = (100 - m.yes_bid) if m.yes_bid is not None else None
 
             if not ask_levels or bbo is None:
                 return {"error": f"No orderbook data for {m.ticker}"}
 
-            # Walk levels to fill target_contracts
+            # Walk levels to fill target_contracts, accumulate fees per fill
             remaining = target_contracts
             leg_cost = 0
             leg_filled = 0
+            leg_fees = 0.0
             for price, size in ask_levels:
                 fill = min(remaining, size)
                 leg_cost += fill * price
+                leg_fees += fill * taker_fee(price)
                 leg_filled += fill
                 remaining -= fill
                 if remaining <= 0:
@@ -950,16 +978,21 @@ class EventMeta:
                 total_slippage += avg_price - bbo
 
             total_cost += leg_cost
+            total_fees += leg_fees
 
         n_markets = len(self.markets)
-        total_fees = fee_per_contract * n_markets * min_fillable
+        # Scale fees to min_fillable (we may not fill all contracts on every leg)
+        if min_fillable < target_contracts and target_contracts > 0:
+            total_fees = total_fees * (min_fillable / target_contracts)
 
         if direction == "long" and min_fillable > 0:
             # Edge = (100 * min_fillable) - total_cost - total_fees, per contract
             edge_total = (100 * min_fillable) - total_cost - total_fees
             edge_per = edge_total / min_fillable
         elif direction == "short" and min_fillable > 0:
-            edge_total = total_cost - (100 * min_fillable) - total_fees
+            # Short arb: buy NO on all N markets; (N-1) markets settle at NO=100
+            # Revenue = (N-1) * 100 * contracts, Cost = total_cost + fees
+            edge_total = ((n_markets - 1) * 100 * min_fillable) - total_cost - total_fees
             edge_per = edge_total / min_fillable
         else:
             edge_per = 0.0

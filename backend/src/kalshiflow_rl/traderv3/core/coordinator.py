@@ -167,9 +167,6 @@ class V3Coordinator:
         # Single-event arb coordinator (initialized in _transition_to_ready when single_arb_enabled)
         self._single_arb_coordinator = None
 
-        # Market maker coordinator (initialized in _transition_to_ready when mm_enabled)
-        self._mm_coordinator = None
-
         self._started_at: Optional[float] = None
         self._running = False
 
@@ -848,10 +845,10 @@ class V3Coordinator:
             if self._trading_state_syncer:
                 asyncio.create_task(self._trading_state_syncer.sync_now())
 
-            # Route fill to MM coordinator if active
-            if self._mm_coordinator:
+            # Route fill to SingleArbCoordinator for MM handling (if MM integrated)
+            if self._single_arb_coordinator and hasattr(self._single_arb_coordinator, '_on_mm_fill'):
                 try:
-                    await self._mm_coordinator.handle_fill(
+                    await self._single_arb_coordinator._on_mm_fill(
                         market_ticker=ticker,
                         side=event.side,
                         action=event.action,
@@ -984,8 +981,7 @@ class V3Coordinator:
         if self._config.single_arb_enabled:
             await self._start_single_arb_system()
 
-        if self._config.mm_enabled:
-            await self._start_mm_system()
+        # MM is handled by SingleArbCoordinator._setup_quote_engine() when mm_enabled=True
 
         # Start EarlyBirdService (after single_arb so AttentionRouter is available)
         if self._config.early_bird_enabled and self._tracked_events_state and self._tracked_markets_state:
@@ -1027,68 +1023,6 @@ class V3Coordinator:
         except Exception as e:
             logger.error(f"Failed to start single-arb system: {e}")
             self._degraded_subsystems.add("single_arb_system")
-
-    async def _start_mm_system(self) -> None:
-        """Initialize and start the market maker subsystem."""
-        try:
-            from ..gateway.client import KalshiGateway
-            from ..market_maker.coordinator import MMCoordinator
-
-            # Create dedicated DEMO gateway for order placement (paper trading).
-            mm_api_url = self._config.api_url
-            mm_ws_url = self._config.ws_url
-            mm_key_id = self._config.api_key_id
-            mm_key_content = self._config.private_key_content
-            mm_subaccount = self._config.subaccount
-            logger.info(f"MM order gateway: demo API ({mm_api_url}, subaccount #{mm_subaccount})")
-
-            gateway = KalshiGateway(
-                api_url=mm_api_url,
-                ws_url=mm_ws_url,
-                api_key_id=mm_key_id,
-                private_key_content=mm_key_content,
-                subaccount=mm_subaccount,
-            )
-            await gateway.connect()
-            self._mm_gateway = gateway  # hold reference for cleanup
-
-            # Create PROD gateway for market data reads (real orderbooks).
-            market_data_gw = None
-            if self._config.hybrid_data_mode:
-                prod_url = self._config.prod_api_url
-                prod_ws = self._config.prod_ws_url
-                prod_key_id = self._config.prod_api_key_id
-                prod_key_content = self._config.prod_private_key_content
-                if prod_url and prod_key_id and prod_key_content:
-                    market_data_gw = KalshiGateway(
-                        api_url=prod_url,
-                        ws_url=prod_ws,
-                        api_key_id=prod_key_id,
-                        private_key_content=prod_key_content,
-                        subaccount=0,  # Read-only, no subaccount
-                    )
-                    await market_data_gw.connect()
-                    self._mm_prod_gateway = market_data_gw
-                    logger.info(f"MM data gateway: PRODUCTION API ({prod_url})")
-                else:
-                    logger.warning("MM hybrid_data_mode enabled but prod credentials incomplete")
-
-            self._mm_coordinator = MMCoordinator(
-                config=self._config,
-                event_bus=self._event_bus,
-                websocket_manager=self._websocket_manager,
-                orderbook_integration=self._orderbook_integration,
-                trading_client=self._trading_client_integration,
-                gateway=gateway,
-                market_data_gateway=market_data_gw,
-            )
-            await self._mm_coordinator.start()
-
-            logger.info("Market maker system started")
-
-        except Exception as e:
-            logger.error(f"Failed to start market maker system: {e}", exc_info=True)
-            self._degraded_subsystems.add("mm_system")
 
     async def _start_early_bird_service(self) -> None:
         """Start EarlyBirdService for detecting newly activated market opportunities."""
@@ -1208,11 +1142,7 @@ class V3Coordinator:
         await self._health_monitor.stop()
         await self._status_reporter.stop()
 
-        # Disconnect MM gateway if created
-        mm_gw = getattr(self, '_mm_gateway', None)
-
         shutdown_sequence = [
-            (self._mm_coordinator, "Market Maker Coordinator", lambda c: c.stop()),
             (self._single_arb_coordinator, "Single Arb Coordinator", lambda c: c.stop()),
             (self._early_bird_service, "Early Bird Service", lambda c: c.stop()),
             (self._lifecycle_persistence, "Lifecycle Persistence", lambda c: c.stop()),
@@ -1244,21 +1174,6 @@ class V3Coordinator:
                     await result
             except Exception as e:
                 logger.error(f"[{step}/{total_steps}] Error stopping {name}: {e}")
-
-        # Disconnect MM gateways
-        if mm_gw:
-            try:
-                await mm_gw.disconnect()
-                logger.info("MM demo gateway disconnected")
-            except Exception as e:
-                logger.warning(f"MM demo gateway disconnect error: {e}")
-        mm_prod_gw = getattr(self, '_mm_prod_gateway', None)
-        if mm_prod_gw:
-            try:
-                await mm_prod_gw.disconnect()
-                logger.info("MM prod gateway disconnected")
-            except Exception as e:
-                logger.warning(f"MM prod gateway disconnect error: {e}")
 
         step = len(active_components) + 1
 
@@ -1310,7 +1225,6 @@ class V3Coordinator:
             ("_tracked_markets_state", "tracked_markets_state", "get_stats"),
             ("_event_lifecycle_service", "event_lifecycle_service", "get_stats"),
             ("_trade_flow_service", "trade_flow_service", "get_trade_processing_stats"),
-            ("_mm_coordinator", "mm_coordinator", "get_status"),
             ("_single_arb_coordinator", "single_arb_coordinator", "get_health_details"),
             ("_tracked_events_state", "tracked_events_state", "get_stats"),
             ("_lifecycle_persistence", "lifecycle_persistence", "get_stats"),

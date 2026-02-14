@@ -1,7 +1,7 @@
 """MMMonitor - Bridges EventBus data into MMIndex for market making.
 
 Subscribes to orderbook, ticker, and trade events. Updates MMIndex state.
-Forwards signals to MMAttentionRouter for Admiral reactive cycles.
+Forwards signals to MMAttentionRouter for Captain reactive cycles.
 """
 
 import asyncio

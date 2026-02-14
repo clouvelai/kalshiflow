@@ -429,7 +429,7 @@ class V3WebSocketManager:
                 except Exception as e:
                     logger.debug(f"Could not send activity_feed_replay to {client_id}: {e}")
 
-            # Replay MM snapshot so the Admiral dashboard renders immediately
+            # Replay MM snapshot so the dashboard renders immediately
             mm_provider = getattr(self, '_mm_snapshot_provider', None)
             if mm_provider and client_id in self._clients:
                 try:

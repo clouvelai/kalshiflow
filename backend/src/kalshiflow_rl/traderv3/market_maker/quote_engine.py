@@ -8,7 +8,7 @@ Runs every refresh_interval seconds. For each market:
   5. Check risk gates (position limit, event exposure, drawdown, VPIN)
   6. Execute: cancel+replace if prices changed
 
-No LLM calls on the hot path. Admiral configures QuoteConfig; engine executes.
+No LLM calls on the hot path. Captain configures QuoteConfig; engine executes.
 
 Architecture:
   - QuoteEngine owns the requote loop
@@ -53,6 +53,7 @@ class QuoteEngine:
         max_drawdown_cents: int = 50000,
         order_ttl: int = 60,
         ws_broadcast: Optional[WSBroadcastCallback] = None,
+        order_group_id: Optional[str] = None,
     ):
         self._index = index
         self._gateway = gateway
@@ -60,6 +61,7 @@ class QuoteEngine:
         self._max_drawdown_cents = max_drawdown_cents
         self._order_ttl = order_ttl
         self._ws_broadcast = ws_broadcast
+        self._order_group_id = order_group_id
 
         self._running = False
         self._task: Optional[asyncio.Task] = None
@@ -375,6 +377,7 @@ class QuoteEngine:
                 count=size,
                 price=price_cents,
                 expiration_ts=expiration_ts,
+                order_group_id=self._order_group_id,
             )
 
             order_id = getattr(resp, 'order', None) and resp.order.order_id or ""
@@ -438,7 +441,7 @@ class QuoteEngine:
     # ------------------------------------------------------------------
 
     async def pull_all_quotes(self, reason: str = "manual") -> int:
-        """Public method to pull all quotes (called by Admiral tool)."""
+        """Public method to pull all quotes (called by Captain tool)."""
         return await self._pull_all_quotes(reason)
 
     async def _pull_all_quotes(self, reason: str) -> int:

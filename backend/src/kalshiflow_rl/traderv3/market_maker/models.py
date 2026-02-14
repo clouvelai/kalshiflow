@@ -1,10 +1,8 @@
-"""Pydantic models and dataclasses for the Admiral market maker.
+"""Pydantic models and dataclasses for the market maker.
 
-All tool returns and context injections use these models. Serialized to JSON
-for the LLM prompt via .model_dump_json().
-
-Dataclasses are used for internal mutable state (QuoteConfig, QuoteState, etc.)
-while Pydantic BaseModel is used for serialization boundaries (tool outputs, WS).
+Dataclasses for internal mutable state (QuoteConfig, QuoteState, etc.)
+and Pydantic BaseModel for serialization boundaries (tool outputs, WS).
+Used by QuoteEngine (deterministic execution) and Captain's MM tools.
 """
 
 from dataclasses import dataclass, field as dc_field
@@ -14,14 +12,14 @@ from pydantic import BaseModel, Field
 
 
 # ---------------------------------------------------------------------------
-# QuoteConfig (mutable by Admiral, like SniperConfig)
+# QuoteConfig (mutable by Captain, like SniperConfig)
 # ---------------------------------------------------------------------------
 
 @dataclass
 class QuoteConfig:
-    """Market-making configuration tunable by the Admiral.
+    """Market-making configuration tunable by Captain.
 
-    Hot-reloaded by QuoteEngine each refresh cycle. Admiral calls
+    Hot-reloaded by QuoteEngine each refresh cycle. Captain calls
     configure_quotes tool to modify these values.
     """
     enabled: bool = True
@@ -184,7 +182,7 @@ class QuoteState:
 # ---------------------------------------------------------------------------
 
 class MMMarketSnapshot(BaseModel):
-    """Per-market state for Admiral tools / WS broadcast."""
+    """Per-market state for Captain tools / WS broadcast."""
     ticker: str
     title: str
     subtitle: str = ""
@@ -223,7 +221,7 @@ class MMMarketSnapshot(BaseModel):
 
 
 class MMEventSnapshot(BaseModel):
-    """Per-event state for Admiral tools / WS broadcast."""
+    """Per-event state for Captain tools / WS broadcast."""
     event_ticker: str
     title: str
     category: str = ""
@@ -233,26 +231,6 @@ class MMEventSnapshot(BaseModel):
     total_position_contracts: int = 0
     total_unrealized_pnl_cents: float = 0.0
     total_realized_pnl_cents: float = 0.0
-
-
-class MMStateResult(BaseModel):
-    """Result of get_mm_state tool."""
-    events: List[MMEventSnapshot] = Field(default_factory=list)
-    quote_config: Dict = Field(default_factory=dict)
-    quote_state: Dict = Field(default_factory=dict)
-
-
-class InventoryResult(BaseModel):
-    """Result of get_inventory tool."""
-    markets: List[Dict] = Field(default_factory=list)
-    total_position_contracts: int = 0
-    total_realized_pnl_cents: float = 0.0
-    total_unrealized_pnl_cents: float = 0.0
-    total_fees_paid_cents: float = 0.0
-    balance_cents: int = 0
-    balance_dollars: float = 0.0
-    event_exposure: int = 0
-    max_event_exposure: int = 0
 
 
 class QuotePerformanceResult(BaseModel):
@@ -291,9 +269,9 @@ class PullQuotesResult(BaseModel):
 
 @dataclass
 class MMAttentionItem:
-    """A scored signal for the Admiral's attention.
+    """A scored signal for Captain's attention.
 
-    Produced by MMAttentionRouter, consumed by Admiral's reactive loop.
+    Produced by MMAttentionRouter, consumed by Captain's reactive loop.
     """
     event_ticker: str
     market_ticker: Optional[str] = None
@@ -334,36 +312,6 @@ class MMAttentionItem:
             "created_at": self.created_at,
             "ttl_seconds": self.ttl_seconds,
         }
-
-
-@dataclass
-class MMReactiveContext:
-    """Context for reactive Admiral cycles (fill/VPIN driven)."""
-    cycle_num: int = 0
-    items: List[MMAttentionItem] = dc_field(default_factory=list)
-    inventory: Optional[InventoryResult] = None
-    quote_state: Optional[Dict] = None
-
-
-@dataclass
-class MMStrategicContext:
-    """Context for strategic Admiral cycles (every 5 min)."""
-    cycle_num: int = 0
-    inventory: Optional[InventoryResult] = None
-    performance: Optional[QuotePerformanceResult] = None
-    pending_items: List[MMAttentionItem] = dc_field(default_factory=list)
-    tasks: str = ""
-
-
-@dataclass
-class MMDeepScanContext:
-    """Context for deep scan Admiral cycles (every 30 min)."""
-    cycle_num: int = 0
-    mm_state: Optional[MMStateResult] = None
-    inventory: Optional[InventoryResult] = None
-    performance: Optional[QuotePerformanceResult] = None
-    health: Optional[Dict] = None
-    memories: Optional[List[str]] = None
 
 
 # Re-export news models from single_arb (shared, not duplicated)

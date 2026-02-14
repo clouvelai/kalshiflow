@@ -127,22 +127,28 @@ def inject_v2_context(
 
 
 class TestToolList:
-    def test_13_tools(self):
-        assert len(ALL_TOOLS) == 13
+    def test_tool_count(self):
+        assert len(ALL_TOOLS) == 18
 
-    def test_configure_sniper_not_in_all_tools(self):
-        """configure_sniper removed from Captain's tool list to prevent sniper obsession."""
+    def test_configure_sniper_in_all_tools(self):
+        """configure_sniper available for Captain to tune sniper dynamically."""
         tool_names = [t.name for t in ALL_TOOLS]
-        assert "configure_sniper" not in tool_names
+        assert "configure_sniper" in tool_names
 
     def test_all_categorized(self):
         for tool in ALL_TOOLS:
             assert tool.name in TOOL_CATEGORIES, f"Tool {tool.name} not categorized"
 
     def test_categories_valid(self):
-        valid = {"arb", "memory", "sniper", "system", "todo"}
+        valid = {"arb", "memory", "sniper", "system", "todo", "mm"}
         for name, cat in TOOL_CATEGORIES.items():
             assert cat in valid, f"Tool {name} has invalid category {cat}"
+
+    def test_mm_tools_present(self):
+        """4 MM tools added for Captain-controlled QuoteEngine."""
+        tool_names = [t.name for t in ALL_TOOLS]
+        for mm_tool in ["configure_quotes", "pull_quotes", "resume_quotes", "get_quote_performance"]:
+            assert mm_tool in tool_names, f"MM tool {mm_tool} missing from ALL_TOOLS"
 
 
 # ===========================================================================
@@ -561,3 +567,193 @@ class TestGetMarketMovers:
             result = await get_market_movers.ainvoke({"event_ticker": "EVT-1"})
         assert "error" in result
         assert result.get("movers") == [] or result.get("movers") is None
+
+
+# ===========================================================================
+# TestEdgeGate
+# ===========================================================================
+
+
+class TestEdgeGate:
+    """Tests for the pre-trade edge gate on place_order."""
+
+    @pytest.mark.asyncio
+    async def test_blocks_yes_buy_at_ask(self):
+        """Buying YES at or above the ask should be blocked (zero edge)."""
+        event = make_event_meta(
+            event_ticker="EVT-1", n_markets=1,
+            market_prices=[{"yes_bid": 50, "yes_ask": 55}],
+        )
+        index = make_index(events=[event])
+        with inject_v2_context(index=index):
+            result = await place_order.ainvoke({
+                "ticker": "EVT-1-MKT-A",
+                "side": "yes",
+                "action": "buy",
+                "contracts": 5,
+                "price_cents": 55,  # At the ask
+                "reasoning": "test",
+            })
+        assert "error" in result
+        assert "NO EDGE" in result["error"]
+        assert result.get("market_yes_ask") == 55
+
+    @pytest.mark.asyncio
+    async def test_blocks_yes_buy_above_ask(self):
+        """Buying YES above the ask should be blocked."""
+        event = make_event_meta(
+            event_ticker="EVT-1", n_markets=1,
+            market_prices=[{"yes_bid": 50, "yes_ask": 55}],
+        )
+        index = make_index(events=[event])
+        with inject_v2_context(index=index):
+            result = await place_order.ainvoke({
+                "ticker": "EVT-1-MKT-A",
+                "side": "yes",
+                "action": "buy",
+                "contracts": 5,
+                "price_cents": 60,  # Above the ask
+                "reasoning": "test",
+            })
+        assert "error" in result
+        assert "NO EDGE" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_allows_yes_buy_below_ask(self):
+        """Buying YES below the ask should be allowed (has edge)."""
+        event = make_event_meta(
+            event_ticker="EVT-1", n_markets=1,
+            market_prices=[{"yes_bid": 50, "yes_ask": 55}],
+        )
+        index = make_index(events=[event])
+        with inject_v2_context(index=index):
+            result = await place_order.ainvoke({
+                "ticker": "EVT-1-MKT-A",
+                "side": "yes",
+                "action": "buy",
+                "contracts": 5,
+                "price_cents": 52,  # Below the ask
+                "reasoning": "test",
+            })
+        assert result.get("error") is None
+        assert result.get("order_id") == "test-order-001"
+
+    @pytest.mark.asyncio
+    async def test_blocks_no_buy_at_no_ask(self):
+        """Buying NO at or above the NO ask should be blocked."""
+        event = make_event_meta(
+            event_ticker="EVT-1", n_markets=1,
+            market_prices=[{"yes_bid": 50, "yes_ask": 55}],
+        )
+        index = make_index(events=[event])
+        # NO ask = 100 - yes_bid = 50
+        with inject_v2_context(index=index):
+            result = await place_order.ainvoke({
+                "ticker": "EVT-1-MKT-A",
+                "side": "no",
+                "action": "buy",
+                "contracts": 5,
+                "price_cents": 50,  # At the NO ask
+                "reasoning": "test",
+            })
+        assert "error" in result
+        assert "NO EDGE" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_allows_no_buy_below_no_ask(self):
+        """Buying NO below the NO ask should be allowed."""
+        event = make_event_meta(
+            event_ticker="EVT-1", n_markets=1,
+            market_prices=[{"yes_bid": 50, "yes_ask": 55}],
+        )
+        index = make_index(events=[event])
+        # NO ask = 100 - yes_bid = 50
+        with inject_v2_context(index=index):
+            result = await place_order.ainvoke({
+                "ticker": "EVT-1-MKT-A",
+                "side": "no",
+                "action": "buy",
+                "contracts": 5,
+                "price_cents": 47,  # Below NO ask of 50
+                "reasoning": "test",
+            })
+        assert result.get("error") is None
+        assert result.get("order_id") == "test-order-001"
+
+    @pytest.mark.asyncio
+    async def test_sell_bypasses_edge_gate(self):
+        """Sell orders (exits) should bypass the edge gate entirely."""
+        event = make_event_meta(
+            event_ticker="EVT-1", n_markets=1,
+            market_prices=[{"yes_bid": 50, "yes_ask": 55}],
+        )
+        index = make_index(events=[event])
+        with inject_v2_context(index=index):
+            result = await place_order.ainvoke({
+                "ticker": "EVT-1-MKT-A",
+                "side": "yes",
+                "action": "sell",
+                "contracts": 5,
+                "price_cents": 99,  # Any price is fine for sells
+                "reasoning": "exiting position",
+            })
+        # Sell should NOT be blocked by edge gate
+        assert result.get("error") is None or "NO EDGE" not in result.get("error", "")
+
+
+# ===========================================================================
+# TestModelHealth
+# ===========================================================================
+
+
+class TestModelHealth:
+    """Tests for ModelHealth tracking and failover."""
+
+    def test_initially_healthy(self):
+        from kalshiflow_rl.traderv3.single_arb.captain import ModelHealth
+        mh = ModelHealth()
+        assert mh.is_healthy is True
+        assert mh.consecutive_failures == 0
+
+    def test_healthy_after_one_failure(self):
+        from kalshiflow_rl.traderv3.single_arb.captain import ModelHealth
+        mh = ModelHealth()
+        mh.record_failure()
+        assert mh.is_healthy is True  # Threshold is 3
+
+    def test_unhealthy_after_three_failures(self):
+        from kalshiflow_rl.traderv3.single_arb.captain import ModelHealth
+        mh = ModelHealth()
+        mh.record_failure()
+        mh.record_failure()
+        mh.record_failure()
+        assert mh.is_healthy is False
+
+    def test_success_resets_failures(self):
+        from kalshiflow_rl.traderv3.single_arb.captain import ModelHealth
+        mh = ModelHealth()
+        mh.record_failure()
+        mh.record_failure()
+        mh.record_success()
+        assert mh.consecutive_failures == 0
+        assert mh.is_healthy is True
+
+    def test_recovers_after_cooldown(self):
+        from kalshiflow_rl.traderv3.single_arb.captain import ModelHealth
+        mh = ModelHealth()
+        mh.record_failure()
+        mh.record_failure()
+        mh.record_failure()
+        assert mh.is_healthy is False
+        # Simulate cooldown by backdating last_failure_time
+        mh.last_failure_time = time.time() - 301
+        assert mh.is_healthy is True
+
+    def test_total_counts_accumulate(self):
+        from kalshiflow_rl.traderv3.single_arb.captain import ModelHealth
+        mh = ModelHealth()
+        mh.record_failure()
+        mh.record_success()
+        mh.record_failure()
+        assert mh.total_failures == 2
+        assert mh.total_successes == 1

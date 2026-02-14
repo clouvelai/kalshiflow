@@ -1,7 +1,7 @@
-"""MMAttentionRouter - Signal scoring and routing for Admiral market maker.
+"""MMAttentionRouter - Signal scoring and routing for market maker.
 
 Monitors market data and quote engine events, scores them, and emits
-MMAttentionItems that trigger reactive Admiral cycles.
+MMAttentionItems that trigger reactive Captain cycles via the bridge.
 
 Signal categories:
   - fill: Our quote was filled (adjust inventory, rebalance)
@@ -14,7 +14,7 @@ Signal categories:
 import asyncio
 import logging
 import time
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from .models import MMAttentionItem
 
@@ -22,18 +22,20 @@ logger = logging.getLogger("kalshiflow_rl.traderv3.market_maker.attention")
 
 
 class MMAttentionRouter:
-    """Scores market signals and notifies Admiral via asyncio.Event."""
+    """Scores market signals and bridges them to Captain's AttentionRouter."""
 
     def __init__(
         self,
         min_score: float = 30.0,
         max_items: int = 20,
+        captain_inject: Optional[Callable] = None,
     ):
         self._min_score = min_score
         self._max_items = max_items
         self._items: List[MMAttentionItem] = []
         self._dedup: Dict[str, float] = {}  # key -> last_emitted_ts
         self._notify_event = asyncio.Event()
+        self._captain_inject = captain_inject  # Bridge to Captain AttentionRouter
 
         # Dedup cooldowns per category
         self._cooldowns = {
@@ -213,8 +215,26 @@ class MMAttentionRouter:
         if len(self._items) > self._max_items:
             self._items = sorted(self._items, key=lambda x: x.score, reverse=True)[:self._max_items]
 
-        # Notify Admiral
+        # Notify local event (legacy compatibility)
         self._notify_event.set()
+
+        # Bridge to Captain AttentionRouter
+        if self._captain_inject:
+            try:
+                from ..single_arb.models import AttentionItem
+                captain_item = AttentionItem(
+                    event_ticker=item.event_ticker,
+                    market_ticker=item.market_ticker,
+                    urgency=item.urgency,
+                    category=f"mm_{item.category}",
+                    summary=f"[MM] {item.summary}",
+                    data=item.data,
+                    score=item.score,
+                    ttl_seconds=item.ttl_seconds,
+                )
+                self._captain_inject(captain_item)
+            except Exception as e:
+                logger.debug(f"[MM_ATTENTION] Captain bridge error: {e}")
 
         logger.info(
             f"[MM_ATTENTION] Emitted {item.category} score={item.score:.0f} "
