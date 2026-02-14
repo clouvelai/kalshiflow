@@ -848,6 +848,20 @@ class V3Coordinator:
             if self._trading_state_syncer:
                 asyncio.create_task(self._trading_state_syncer.sync_now())
 
+            # Route fill to MM coordinator if active
+            if self._mm_coordinator:
+                try:
+                    await self._mm_coordinator.handle_fill(
+                        market_ticker=ticker,
+                        side=event.side,
+                        action=event.action,
+                        price_cents=price_cents,
+                        count=count,
+                        order_id=event.order_id or "",
+                    )
+                except Exception as mm_err:
+                    logger.debug(f"MM fill routing error: {mm_err}")
+
         except Exception as e:
             logger.error(f"Error handling order fill event: {e}")
 
