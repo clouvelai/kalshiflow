@@ -98,6 +98,8 @@ class QuoteEngine:
         self._running = True
         self._starting_balance_cents = balance_cents
         self._current_balance_cents = balance_cents
+        # Clear any stale quote tracking from previous sessions
+        self._index.clear_all_quotes()
         self._task = asyncio.create_task(self._run_loop())
         logger.info("[QUOTE_ENGINE] Started quoting loop")
 
@@ -333,7 +335,11 @@ class QuoteEngine:
                 await self._gateway.cancel_order(existing.order_id)
                 self._index.clear_quote(market_ticker, quote_side)
             except Exception as e:
-                logger.warning(f"[QUOTE_ENGINE] Cancel failed for {existing.order_id}: {e}")
+                # 404 = already expired/filled — expected for TTL orders
+                if "404" in str(e) or "not_found" in str(e):
+                    logger.debug(f"[QUOTE_ENGINE] Cancel 404 (expired): {existing.order_id}")
+                else:
+                    logger.warning(f"[QUOTE_ENGINE] Cancel failed for {existing.order_id}: {e}")
                 self._index.clear_quote(market_ticker, quote_side)
 
         # Place new quote
@@ -384,7 +390,10 @@ class QuoteEngine:
             await self._gateway.cancel_order(existing.order_id)
             self._index.clear_quote(market_ticker, quote_side)
         except Exception as e:
-            logger.warning(f"[QUOTE_ENGINE] Cancel failed for {existing.order_id}: {e}")
+            if "404" in str(e) or "not_found" in str(e):
+                logger.debug(f"[QUOTE_ENGINE] Cancel 404 (expired): {existing.order_id}")
+            else:
+                logger.warning(f"[QUOTE_ENGINE] Cancel failed for {existing.order_id}: {e}")
             self._index.clear_quote(market_ticker, quote_side)
 
     async def _cancel_market_quotes(self, market_ticker: str, reason: str) -> None:

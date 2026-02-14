@@ -209,6 +209,7 @@ class MMCoordinator:
                 config=self._config,
                 attention_router=self._attention_router,
                 broadcast_callback=_ws_broadcast,
+                quote_engine=self._quote_engine,
             )
 
             # Step 9: Prefetch orderbooks
@@ -342,6 +343,59 @@ class MMCoordinator:
             status["monitor"] = self._monitor.get_stats()
 
         return status
+
+    # ------------------------------------------------------------------ #
+    #  Fill Handling                                                       #
+    # ------------------------------------------------------------------ #
+
+    async def handle_fill(
+        self,
+        market_ticker: str,
+        side: str,
+        action: str,
+        price_cents: int,
+        count: int,
+        order_id: str = "",
+    ) -> None:
+        """Handle a fill event from the V3 coordinator.
+
+        Routes to QuoteEngine (inventory + telemetry), AttentionRouter (signals),
+        and broadcasts to frontend via WS.
+        """
+        if not self._index or market_ticker not in self._index.market_tickers:
+            return
+
+        # 1. Update inventory + telemetry in quote engine
+        if self._quote_engine:
+            self._quote_engine.on_fill(market_ticker, side, action, price_cents, count)
+
+        # 2. Signal attention router
+        if self._attention_router:
+            event_ticker = self._index.get_event_for_ticker(market_ticker) or ""
+            self._attention_router.on_fill(
+                event_ticker, market_ticker, side, action, price_cents, count
+            )
+
+        # 3. Broadcast fill to frontend
+        if self._websocket_manager:
+            try:
+                await self._websocket_manager.broadcast_message("mm_quote_filled", {
+                    "market_ticker": market_ticker,
+                    "quote_side": "bid" if (side == "yes" and action == "buy") else "ask",
+                    "side": side,
+                    "action": action,
+                    "price_cents": price_cents,
+                    "count": count,
+                    "order_id": order_id,
+                    "timestamp": time.time(),
+                })
+            except Exception:
+                pass
+
+        logger.info(
+            f"[MM_COORD:FILL] {market_ticker} {side} {action} "
+            f"{count}@{price_cents}c"
+        )
 
     # ------------------------------------------------------------------ #
     #  Position + Balance Sync (reconcile with Kalshi API)                #

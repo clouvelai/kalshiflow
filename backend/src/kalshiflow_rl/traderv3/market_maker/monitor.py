@@ -10,6 +10,7 @@ import time
 from typing import Any, Callable, Coroutine, Dict, Optional
 
 from ..core.events.types import EventType
+from ..core.events.market_events import OrderFillEvent
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.market_maker.monitor")
 
@@ -30,6 +31,7 @@ class MMMonitor:
         config,
         attention_router=None,  # MMAttentionRouter
         broadcast_callback: Optional[Callable[..., Coroutine]] = None,
+        quote_engine=None,  # QuoteEngine — for fill forwarding
     ):
         self._index = index
         self._event_bus = event_bus
@@ -37,6 +39,7 @@ class MMMonitor:
         self._config = config
         self._attention = attention_router
         self._broadcast = broadcast_callback
+        self._quote_engine = quote_engine
 
         self._running = False
         self._poller_task: Optional[asyncio.Task] = None
@@ -60,6 +63,10 @@ class MMMonitor:
         self._event_bus.subscribe(EventType.ORDERBOOK_DELTA, self._on_orderbook)
         self._event_bus.subscribe(EventType.TICKER_UPDATE, self._on_ticker)
         self._event_bus.subscribe(EventType.MARKET_TRADE, self._on_trade)
+
+        # Subscribe to order fills for inventory + quote tracking
+        if hasattr(self._event_bus, 'subscribe_to_order_fill'):
+            await self._event_bus.subscribe_to_order_fill(self._on_order_fill)
 
         poll_interval = getattr(self._config, "mm_refresh_interval", 5.0)
         self._poller_task = asyncio.create_task(self._rest_poller_loop(poll_interval * 6))
@@ -151,6 +158,48 @@ class MMMonitor:
             return
         self._index.on_trade(market_ticker, metadata)
         self._trade_count += 1
+
+    async def _on_order_fill(self, event: OrderFillEvent) -> None:
+        """Handle order fill — update inventory, quote engine, attention."""
+        ticker = event.market_ticker
+        if ticker not in self._index.market_tickers:
+            return
+
+        side = event.side.lower()    # "yes" or "no"
+        action = event.action.lower()  # "buy" or "sell"
+        price = event.price_cents
+        count = event.count
+
+        logger.info(
+            f"[MM_FILL] {ticker}: {action} {count} {side} @ {price}c "
+            f"(maker={not event.is_taker}, post_pos={event.post_position})"
+        )
+
+        # Forward to QuoteEngine (updates inventory, telemetry, clears filled quote)
+        if self._quote_engine:
+            self._quote_engine.on_fill(ticker, side, action, price, count)
+
+        # Signal to attention router
+        if self._attention:
+            event_ticker = self._index.get_event_for_ticker(ticker) or ""
+            self._attention.on_fill(event_ticker, ticker, side, action, price, count)
+
+        # Broadcast fill event for trade log
+        if self._broadcast:
+            try:
+                await self._broadcast("mm_quote_filled", {
+                    "market_ticker": ticker,
+                    "side": side,
+                    "action": action,
+                    "price_cents": price,
+                    "count": count,
+                    "is_taker": event.is_taker,
+                    "order_id": event.order_id,
+                    "quote_side": "bid" if (side == "yes" and action == "buy") else "ask",
+                    "timestamp": event.timestamp,
+                })
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # REST Fallback
