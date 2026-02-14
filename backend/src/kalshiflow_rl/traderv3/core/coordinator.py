@@ -167,6 +167,9 @@ class V3Coordinator:
         # Single-event arb coordinator (initialized in _transition_to_ready when single_arb_enabled)
         self._single_arb_coordinator = None
 
+        # Market maker coordinator (initialized in _transition_to_ready when mm_enabled)
+        self._mm_coordinator = None
+
         self._started_at: Optional[float] = None
         self._running = False
 
@@ -849,10 +852,23 @@ class V3Coordinator:
             logger.error(f"Error handling order fill event: {e}")
 
     async def _sync_trading_state(self) -> None:
-        """Perform initial trading state sync."""
+        """Perform initial trading state sync with retry on transient failures."""
         logger.info("Syncing with Kalshi...")
 
-        state, changes = await self._trading_client_integration.sync_with_kalshi()
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
+                state, changes = await self._trading_client_integration.sync_with_kalshi()
+                break
+            except Exception as e:
+                err_str = str(e).lower()
+                if "503" in err_str or "service_unavailable" in err_str:
+                    if attempt < max_retries - 1:
+                        delay = (2 ** attempt) * 2
+                        logger.warning(f"Kalshi sync attempt {attempt + 1}/{max_retries} failed (503), retrying in {delay}s...")
+                        await asyncio.sleep(delay)
+                        continue
+                raise
         state_changed = await self._state_container.update_trading_state(state, changes)
         self._state_container.initialize_session_pnl(state.balance, state.portfolio_value)
 
@@ -954,6 +970,9 @@ class V3Coordinator:
         if self._config.single_arb_enabled:
             await self._start_single_arb_system()
 
+        if self._config.mm_enabled:
+            await self._start_mm_system()
+
         # Start EarlyBirdService (after single_arb so AttentionRouter is available)
         if self._config.early_bird_enabled and self._tracked_events_state and self._tracked_markets_state:
             await self._start_early_bird_service()
@@ -994,6 +1013,47 @@ class V3Coordinator:
         except Exception as e:
             logger.error(f"Failed to start single-arb system: {e}")
             self._degraded_subsystems.add("single_arb_system")
+
+    async def _start_mm_system(self) -> None:
+        """Initialize and start the market maker subsystem."""
+        try:
+            from ..gateway.client import KalshiGateway
+            from ..market_maker.coordinator import MMCoordinator
+
+            # Create dedicated gateway for MM system (needed for order placement).
+            # Use demo API credentials — that's where paper trading balance lives.
+            mm_api_url = self._config.api_url
+            mm_ws_url = self._config.ws_url
+            mm_key_id = self._config.api_key_id
+            mm_key_content = self._config.private_key_content
+            mm_subaccount = self._config.subaccount
+            logger.info(f"MM gateway using demo API ({mm_api_url}, subaccount #{mm_subaccount})")
+
+            gateway = KalshiGateway(
+                api_url=mm_api_url,
+                ws_url=mm_ws_url,
+                api_key_id=mm_key_id,
+                private_key_content=mm_key_content,
+                subaccount=mm_subaccount,
+            )
+            await gateway.connect()
+            self._mm_gateway = gateway  # hold reference for cleanup
+
+            self._mm_coordinator = MMCoordinator(
+                config=self._config,
+                event_bus=self._event_bus,
+                websocket_manager=self._websocket_manager,
+                orderbook_integration=self._orderbook_integration,
+                trading_client=self._trading_client_integration,
+                gateway=gateway,
+            )
+            await self._mm_coordinator.start()
+
+            logger.info("Market maker system started")
+
+        except Exception as e:
+            logger.error(f"Failed to start market maker system: {e}", exc_info=True)
+            self._degraded_subsystems.add("mm_system")
 
     async def _start_early_bird_service(self) -> None:
         """Start EarlyBirdService for detecting newly activated market opportunities."""
@@ -1113,7 +1173,11 @@ class V3Coordinator:
         await self._health_monitor.stop()
         await self._status_reporter.stop()
 
+        # Disconnect MM gateway if created
+        mm_gw = getattr(self, '_mm_gateway', None)
+
         shutdown_sequence = [
+            (self._mm_coordinator, "Market Maker Coordinator", lambda c: c.stop()),
             (self._single_arb_coordinator, "Single Arb Coordinator", lambda c: c.stop()),
             (self._early_bird_service, "Early Bird Service", lambda c: c.stop()),
             (self._lifecycle_persistence, "Lifecycle Persistence", lambda c: c.stop()),
@@ -1145,6 +1209,14 @@ class V3Coordinator:
                     await result
             except Exception as e:
                 logger.error(f"[{step}/{total_steps}] Error stopping {name}: {e}")
+
+        # Disconnect MM gateway
+        if mm_gw:
+            try:
+                await mm_gw.disconnect()
+                logger.info("MM gateway disconnected")
+            except Exception as e:
+                logger.warning(f"MM gateway disconnect error: {e}")
 
         step = len(active_components) + 1
 
@@ -1196,6 +1268,7 @@ class V3Coordinator:
             ("_tracked_markets_state", "tracked_markets_state", "get_stats"),
             ("_event_lifecycle_service", "event_lifecycle_service", "get_stats"),
             ("_trade_flow_service", "trade_flow_service", "get_trade_processing_stats"),
+            ("_mm_coordinator", "mm_coordinator", "get_status"),
             ("_single_arb_coordinator", "single_arb_coordinator", "get_health_details"),
             ("_tracked_events_state", "tracked_events_state", "get_stats"),
             ("_lifecycle_persistence", "lifecycle_persistence", "get_stats"),

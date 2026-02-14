@@ -62,11 +62,27 @@ class KalshiDataSync:
             
             # 2. Get positions (returns market_positions array)
             logger.debug("Fetching positions...")
-            positions_response = await self._client.get_positions()
-            
+            positions_response = None
+            try:
+                positions_response = await self._client.get_positions()
+            except Exception as e:
+                if "503" in str(e) or "service_unavailable" in str(e).lower():
+                    logger.warning(f"Positions endpoint unavailable (503), starting with empty positions")
+                    positions_response = {"market_positions": []}
+                else:
+                    raise
+
             # 3. Get orders (returns orders array)
             logger.debug("Fetching orders...")
-            orders_response = await self._client.get_orders()
+            orders_response = None
+            try:
+                orders_response = await self._client.get_orders()
+            except Exception as e:
+                if "503" in str(e) or "service_unavailable" in str(e).lower():
+                    logger.warning(f"Orders endpoint unavailable (503), starting with empty orders")
+                    orders_response = {"orders": []}
+                else:
+                    raise
             
             # 4. Get settlements (optional, may fail)
             settlements = []

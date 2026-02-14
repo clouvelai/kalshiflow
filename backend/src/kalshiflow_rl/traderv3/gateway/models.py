@@ -85,14 +85,24 @@ class Order(BaseModel):
     side: str = ""    # yes / no
     type: str = "limit"
     status: str = ""
-    price: int = 0
-    yes_price: int = 0
-    no_price: int = 0
-    count: int = 0
-    remaining_count: int = 0
+    price: Optional[int] = 0
+    yes_price: Optional[int] = 0
+    no_price: Optional[int] = 0
+    count: Optional[int] = 0
+    remaining_count: Optional[int] = 0
     created_time: Optional[str] = None
     expiration_time: Optional[str] = None
-    order_group_id: str = ""
+    order_group_id: Optional[str] = ""
+
+    @field_validator("order_group_id", mode="before")
+    @classmethod
+    def coerce_none_str(cls, v):
+        return v if v is not None else ""
+
+    @field_validator("price", "yes_price", "no_price", "count", "remaining_count", mode="before")
+    @classmethod
+    def coerce_none_to_zero(cls, v):
+        return v if v is not None else 0
 
     model_config = {"extra": "allow"}
 
@@ -100,6 +110,8 @@ class Order(BaseModel):
 class OrderResponse(BaseModel):
     """POST /portfolio/orders response wrapper."""
     order: Order = Field(default_factory=Order)
+
+    model_config = {"extra": "allow"}
 
 
 class Position(BaseModel):
