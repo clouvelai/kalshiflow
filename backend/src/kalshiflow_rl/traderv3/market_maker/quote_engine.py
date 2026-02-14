@@ -256,10 +256,57 @@ class QuoteEngine:
                     "cycle": self.state.total_requote_cycles,
                     "active_quotes": active_count,
                     "spread_multiplier": self.state.spread_multiplier,
+                    "quotes_pulled": self.state.quotes_pulled,
+                    "pull_reason": self.state.pull_reason,
+                    "fees_paid_cents": self.state.fees_paid_cents,
                     "timestamp": time.time(),
                 })
             except Exception:
                 pass
+            # Broadcast full snapshot so frontend stays current
+            try:
+                snapshot = self._index.get_full_snapshot()
+                await self._ws_broadcast("mm_snapshot", snapshot)
+            except Exception as e:
+                logger.warning(f"[QUOTE_ENGINE] Snapshot broadcast failed: {e}")
+            # Broadcast flat inventory for the inventory panel
+            try:
+                inventory_markets = []
+                for ticker in self._index.market_tickers:
+                    inv = self._index.get_inventory(ticker)
+                    snap = self._index.get_market_snapshot(ticker)
+                    quotes = self._index.get_quotes(ticker)
+                    event_ticker = self._index.get_event_for_ticker(ticker) or ""
+                    mid = snap.yes_bid if snap else None
+                    title = (snap.title if snap else ticker)[:60]
+                    unrealized = 0.0
+                    if inv.position != 0 and mid is not None:
+                        if inv.position > 0:
+                            unrealized = (mid - inv.avg_entry_cents) * inv.position
+                        else:
+                            unrealized = (inv.avg_entry_cents - mid) * abs(inv.position)
+                    bid_q = quotes.get("bid")
+                    ask_q = quotes.get("ask")
+                    inventory_markets.append({
+                        "ticker": ticker,
+                        "event_ticker": event_ticker,
+                        "title": title,
+                        "position": inv.position,
+                        "avg_entry_cents": round(inv.avg_entry_cents, 1),
+                        "realized_pnl_cents": round(inv.realized_pnl_cents, 1),
+                        "unrealized_pnl_cents": round(unrealized, 1),
+                        "total_buys": inv.total_buys,
+                        "total_sells": inv.total_sells,
+                        "mid_cents": snap.fair_value or mid if snap else None,
+                        "bid_quote": {"price": bid_q.price_cents, "size": bid_q.size} if bid_q else None,
+                        "ask_quote": {"price": ask_q.price_cents, "size": ask_q.size} if ask_q else None,
+                    })
+                await self._ws_broadcast("mm_inventory_update", {
+                    "markets": inventory_markets,
+                    "timestamp": time.time(),
+                })
+            except Exception as e:
+                logger.warning(f"[QUOTE_ENGINE] Inventory broadcast failed: {e}")
 
     # ------------------------------------------------------------------
     # Quote Placement

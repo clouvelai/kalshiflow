@@ -149,7 +149,7 @@ class MMCoordinator:
 
             async def _ws_broadcast(msg_type: str, data: Dict) -> None:
                 if self._websocket_manager:
-                    await self._websocket_manager.broadcast(msg_type, data)
+                    await self._websocket_manager.broadcast_message(msg_type, data)
 
             self._quote_engine = QuoteEngine(
                 index=self._index,
@@ -258,12 +258,18 @@ class MMCoordinator:
 
             self._system_ready.set()
 
-            # Step 12: Broadcast initial snapshot
+            # Step 12: Broadcast initial snapshot + register replay provider
             try:
                 snapshot = self._index.get_full_snapshot()
                 await _ws_broadcast("mm_snapshot", snapshot)
             except Exception:
                 pass
+
+            # Register snapshot provider so new WS clients get MM state on connect
+            if self._websocket_manager:
+                self._websocket_manager.set_mm_snapshot_provider(
+                    lambda: self._index.get_full_snapshot()
+                )
 
             self._running = True
             elapsed = time.time() - self._started_at

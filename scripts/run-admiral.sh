@@ -26,6 +26,7 @@ done
 export V3_MM_ENABLED=true
 export V3_SINGLE_ARB_ENABLED=false
 export V3_HYBRID_DATA_MODE=false
+export V3_CLEANUP_ON_STARTUP=false
 
 # Helper: resolve relative path and read key file
 resolve_key() {
@@ -81,5 +82,4 @@ echo "========================="
 cd "$PROJECT_DIR/backend"
 exec uv run uvicorn kalshiflow_rl.traderv3.app:app \
     --host "${V3_HOST:-0.0.0.0}" \
-    --port "${V3_PORT:-8005}" \
-    --reload
+    --port "${V3_PORT:-8005}"

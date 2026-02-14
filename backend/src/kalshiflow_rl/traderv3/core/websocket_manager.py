@@ -75,6 +75,7 @@ class V3WebSocketManager:
         self._tracked_markets_state: Optional['TrackedMarketsState'] = None
         self._upcoming_markets_syncer: Optional['UpcomingMarketsSyncer'] = None
         self._single_arb_coordinator = None
+        self._mm_snapshot_provider = None
         self._clients: Dict[str, WebSocketClient] = {}
         self._client_counter = 0
         self._started_at: Optional[float] = None
@@ -134,6 +135,14 @@ class V3WebSocketManager:
     def set_single_arb_coordinator(self, coordinator) -> None:
         self._single_arb_coordinator = coordinator
         logger.info("SingleArbCoordinator set on WebSocket manager")
+
+    def set_mm_snapshot_provider(self, provider) -> None:
+        """Set a callable that returns the current MM snapshot dict.
+
+        Called on each new WS client connect to replay mm_snapshot.
+        """
+        self._mm_snapshot_provider = provider
+        logger.info("MM snapshot provider set on WebSocket manager")
 
     def _add_to_activity_feed_history(self, message_type: str, data: dict) -> None:
         """Track events for Activity Feed history replay."""
@@ -419,6 +428,20 @@ class V3WebSocketManager:
                     logger.debug(f"Sent activity_feed_replay ({len(self._activity_feed_history)} items) to {client_id}")
                 except Exception as e:
                     logger.debug(f"Could not send activity_feed_replay to {client_id}: {e}")
+
+            # Replay MM snapshot so the Admiral dashboard renders immediately
+            mm_provider = getattr(self, '_mm_snapshot_provider', None)
+            if mm_provider and client_id in self._clients:
+                try:
+                    mm_snapshot = mm_provider()
+                    if mm_snapshot:
+                        await self._send_to_client(client_id, {
+                            "type": "mm_snapshot",
+                            "data": mm_snapshot,
+                        })
+                        logger.debug(f"Sent mm_snapshot to {client_id}")
+                except Exception as e:
+                    logger.debug(f"Could not send mm_snapshot to {client_id}: {e}")
 
             # Send gateway config so frontend knows data source provenance
             if self._single_arb_coordinator and client_id in self._clients:

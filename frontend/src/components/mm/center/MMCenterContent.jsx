@@ -51,11 +51,21 @@ const MMCenterContent = ({
     return markets[0] || null;
   }, [markets, selectedMarketTicker]);
 
-  // Our quotes for selected market (from quoteState)
+  // Our quotes for selected market (from market snapshot data)
   const ourQuotes = useMemo(() => {
-    if (!selectedMarket || !quoteState?.market_quotes) return null;
-    return quoteState.market_quotes[selectedMarket.ticker] || null;
-  }, [selectedMarket, quoteState]);
+    if (!selectedMarket) return null;
+    const bid = selectedMarket.our_bid_price != null ? {
+      price_cents: selectedMarket.our_bid_price,
+      size: selectedMarket.our_bid_size || 0,
+      queue_position: selectedMarket.our_bid_queue,
+    } : null;
+    const ask = selectedMarket.our_ask_price != null ? {
+      price_cents: selectedMarket.our_ask_price,
+      size: selectedMarket.our_ask_size || 0,
+      queue_position: selectedMarket.our_ask_queue,
+    } : null;
+    return (bid || ask) ? { bid, ask } : null;
+  }, [selectedMarket]);
 
   const fairValue = selectedMarket?.fair_value ?? null;
 

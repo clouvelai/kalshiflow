@@ -61,10 +61,12 @@ _file_handler = logging.handlers.RotatingFileHandler(
     backupCount=7,
 )
 _file_handler.setFormatter(logging.Formatter(_log_fmt))
+_stderr_handler = logging.StreamHandler()
+_stderr_handler.setFormatter(logging.Formatter(_log_fmt))
 logging.basicConfig(
     level=logging.INFO,
     format=_log_fmt,
-    handlers=[_file_handler],
+    handlers=[_file_handler, _stderr_handler],
 )
 logger = logging.getLogger("kalshiflow_rl.traderv3")
 
