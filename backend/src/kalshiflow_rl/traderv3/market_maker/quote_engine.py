@@ -309,6 +309,29 @@ class QuoteEngine:
                 })
             except Exception as e:
                 logger.warning(f"[QUOTE_ENGINE] Inventory broadcast failed: {e}")
+            # Broadcast performance every 6th cycle (~30s)
+            if self.state.total_requote_cycles % 6 == 0:
+                try:
+                    total_fills = self.state.total_fills_bid + self.state.total_fills_ask
+                    total_cycles = max(self.state.total_requote_cycles, 1)
+                    realized = self._index.total_realized_pnl()
+                    await self._ws_broadcast("mm_performance_snapshot", {
+                        "total_fills_bid": self.state.total_fills_bid,
+                        "total_fills_ask": self.state.total_fills_ask,
+                        "total_requote_cycles": total_cycles,
+                        "spread_captured_cents": round(self.state.spread_captured_cents, 2),
+                        "adverse_selection_cents": round(self.state.adverse_selection_cents, 2),
+                        "fees_paid_cents": round(self.state.fees_paid_cents, 2),
+                        "realized_pnl_cents": round(realized, 2),
+                        "bid_fill_rate": self.state.total_fills_bid / total_cycles if total_fills else 0,
+                        "ask_fill_rate": self.state.total_fills_ask / total_cycles if total_fills else 0,
+                        "quote_uptime_pct": self.state.quote_uptime_pct,
+                        "spread_multiplier": self.state.spread_multiplier,
+                        "fill_storm_active": self.state.fill_storm_active,
+                        "timestamp": time.time(),
+                    })
+                except Exception:
+                    pass
 
     # ------------------------------------------------------------------
     # Quote Placement

@@ -49,13 +49,15 @@ class MMCoordinator:
         orderbook_integration,
         trading_client=None,
         gateway=None,
+        market_data_gateway=None,
     ):
         self._config = config
         self._event_bus = event_bus
         self._websocket_manager = websocket_manager
         self._orderbook_integration = orderbook_integration
         self._trading_client = trading_client
-        self._gateway = gateway
+        self._gateway = gateway  # Demo API — for order placement
+        self._market_data_gateway = market_data_gateway  # Prod API — for reading data (optional)
 
         self._index: Optional[MMIndex] = None
         self._monitor: Optional[MMMonitor] = None
@@ -97,14 +99,18 @@ class MMCoordinator:
                 logger.warning("[MM_COORD] No mm_event_tickers configured!")
                 return
 
-            # Gateway returns Pydantic models; load_event expects dicts.
-            # Use MarketDataAdapter for dict-based calls, raw gateway for orders.
-            if self._gateway:
-                from ..gateway.market_data_adapter import MarketDataAdapter
+            # Determine data client: prod gateway (real liquidity) vs demo gateway
+            from ..gateway.market_data_adapter import MarketDataAdapter
+            if self._market_data_gateway:
+                data_client = MarketDataAdapter(self._market_data_gateway)
+                api_client = self._market_data_gateway
+                logger.info("[MM_COORD] Using PRODUCTION API for market data reads")
+            elif self._gateway:
                 data_client = MarketDataAdapter(self._gateway)
+                api_client = self._gateway
             else:
                 data_client = self._trading_client
-            api_client = self._gateway or self._trading_client
+                api_client = self._trading_client
 
             for et in event_tickers:
                 meta = await self._index.load_event(et, data_client)
@@ -121,14 +127,18 @@ class MMCoordinator:
                     await self._orderbook_integration.subscribe_market(ticker)
                     logger.debug(f"[MM_COORD] Subscribed to orderbook: {ticker}")
 
-            # Step 4: Create order group
+            # Step 4: Clean slate — cancel all resting orders for our markets
+            if self._gateway:
+                await self._cleanup_stale_orders()
+
+            # Step 4b: Create order group (if API supports it)
             if self._gateway:
                 try:
                     og = await self._gateway.create_order_group(contracts_limit=10000)
                     self._order_group_id = og.order_group_id
                     logger.info(f"[MM_COORD] Order group: {self._order_group_id}")
                 except Exception as e:
-                    logger.warning(f"[MM_COORD] Order group creation failed: {e}")
+                    logger.debug(f"[MM_COORD] Order group not available: {e}")
 
             # Step 5: Setup session
             from ..agent_tools.session import TradingSession
@@ -343,6 +353,50 @@ class MMCoordinator:
             status["monitor"] = self._monitor.get_stats()
 
         return status
+
+    # ------------------------------------------------------------------ #
+    #  Startup Cleanup                                                     #
+    # ------------------------------------------------------------------ #
+
+    async def _cleanup_stale_orders(self) -> None:
+        """Cancel all resting orders for our markets on startup.
+
+        Ensures a clean slate — no phantom orders from a previous session.
+        Uses batch cancel if order group is available, falls back to
+        fetching and cancelling individual resting orders.
+        """
+        if not self._gateway:
+            return
+
+        cancelled = 0
+        try:
+            # Fetch all resting orders
+            orders = await self._gateway.get_orders(status="resting")
+            our_tickers = set(self._index.market_tickers) if self._index else set()
+
+            stale_ids = []
+            for order in orders:
+                ticker = getattr(order, 'ticker', None)
+                oid = getattr(order, 'order_id', None)
+                if ticker in our_tickers and oid:
+                    stale_ids.append(oid)
+
+            if not stale_ids:
+                logger.info("[MM_COORD] No stale orders to clean up")
+                return
+
+            # Cancel them
+            for oid in stale_ids:
+                try:
+                    await self._gateway.cancel_order(oid)
+                    cancelled += 1
+                except Exception:
+                    pass  # Already expired/filled
+
+            logger.info(f"[MM_COORD] Cleaned up {cancelled}/{len(stale_ids)} stale orders")
+
+        except Exception as e:
+            logger.warning(f"[MM_COORD] Startup cleanup failed: {e}")
 
     # ------------------------------------------------------------------ #
     #  Fill Handling                                                       #
