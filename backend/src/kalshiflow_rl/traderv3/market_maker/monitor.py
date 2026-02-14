@@ -194,15 +194,18 @@ class MMMonitor:
         # Broadcast fill event for trade log
         if self._broadcast:
             try:
+                is_bid = (side == "yes" and action == "buy")
+                # Convert ask fills (NO buys) to YES terms for frontend display
+                display_price = price if is_bid else (100 - price)
                 await self._broadcast("mm_quote_filled", {
                     "market_ticker": ticker,
                     "side": side,
                     "action": action,
-                    "price_cents": price,
+                    "price_cents": display_price,
                     "count": count,
                     "is_taker": event.is_taker,
                     "order_id": event.order_id,
-                    "quote_side": "bid" if (side == "yes" and action == "buy") else "ask",
+                    "quote_side": "bid" if is_bid else "ask",
                     "timestamp": event.timestamp,
                 })
             except Exception:

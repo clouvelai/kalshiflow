@@ -433,12 +433,15 @@ class MMCoordinator:
         # 3. Broadcast fill to frontend
         if self._websocket_manager:
             try:
+                is_bid = (side == "yes" and action == "buy")
+                # Convert ask fills (NO buys) to YES terms for frontend display
+                display_price = price_cents if is_bid else (100 - price_cents)
                 await self._websocket_manager.broadcast_message("mm_quote_filled", {
                     "market_ticker": market_ticker,
-                    "quote_side": "bid" if (side == "yes" and action == "buy") else "ask",
+                    "quote_side": "bid" if is_bid else "ask",
                     "side": side,
                     "action": action,
-                    "price_cents": price_cents,
+                    "price_cents": display_price,
                     "count": count,
                     "order_id": order_id,
                     "timestamp": time.time(),

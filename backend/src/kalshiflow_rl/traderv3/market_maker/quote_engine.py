@@ -390,12 +390,15 @@ class QuoteEngine:
 
             if self._ws_broadcast:
                 try:
+                    # Convert ask price to YES terms for frontend consistency
+                    display_price = (100 - price_cents) if quote_side == "ask" else price_cents
                     await self._ws_broadcast("mm_quote_placed", {
                         "market_ticker": market_ticker,
                         "quote_side": quote_side,
-                        "price_cents": price_cents,
+                        "price_cents": display_price,
                         "size": size,
                         "order_id": order_id,
+                        "timestamp": time.time(),
                     })
                 except Exception:
                     pass
