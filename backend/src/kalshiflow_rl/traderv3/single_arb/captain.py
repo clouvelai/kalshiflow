@@ -17,7 +17,6 @@ import os
 import time
 import traceback
 import uuid
-from dataclasses import dataclass, field
 from typing import Any, Callable, Coroutine, Dict, List, Optional, TYPE_CHECKING
 
 from deepagents.backends import StateBackend
@@ -47,35 +46,6 @@ _MODEL_COST_RATES = {
     "claude-haiku-4-5-20251001": {"input": 0.8, "output": 4.0},
     "gemini-2.0-flash": {"input": 0.1, "output": 0.4},
 }
-
-
-@dataclass
-class ModelHealth:
-    """Tracks LLM model health for automatic failover.
-
-    After consecutive_failures >= threshold (default 3), marks the model
-    unhealthy. Recovers after a cooldown period (default 300s).
-    """
-    consecutive_failures: int = 0
-    last_failure_time: float = 0
-    total_failures: int = 0
-    total_successes: int = 0
-
-    def record_failure(self):
-        self.consecutive_failures += 1
-        self.last_failure_time = time.time()
-        self.total_failures += 1
-
-    def record_success(self):
-        self.consecutive_failures = 0
-        self.total_successes += 1
-
-    @property
-    def is_healthy(self) -> bool:
-        if self.consecutive_failures < 3:
-            return True
-        # Cooldown: recover after 5 minutes
-        return time.time() - self.last_failure_time > 300
 
 
 CAPTAIN_PROMPT_TEMPLATE = """You are the Captain — an autonomous Kalshi prediction market trader.
@@ -349,14 +319,11 @@ class ArbCaptain:
         # Per-cycle tool call tracking (reset in _cycle_preamble)
         self._current_cycle_tools: Dict[str, int] = {}
 
-        # Dual-failure backoff: both primary and fallback LLM models down
-        self._consecutive_dual_failures = 0
+        # Backoff: consecutive LLM failures
+        self._consecutive_failures = 0
 
-        # Model health tracking + failover
-        self._model_health = ModelHealth()
-        self._fallback_model_name = getattr(config, "model_captain_fallback", None) or "claude-haiku-4-5-20251001"
-        self._using_fallback = False
-        self._system_prompt = system_prompt  # Store for agent recreation
+        # Consecutive timeout tracking for escalation
+        self._consecutive_timeouts: int = 0
 
         # Per-cycle token tracking (reset in _cycle_preamble)
         self._cycle_input_tokens = 0
@@ -406,15 +373,15 @@ class ArbCaptain:
         if len(self._errors) > 50:
             self._errors = self._errors[-50:]
 
-    def _dual_failure_backoff(self) -> float:
-        """Compute sleep duration based on consecutive dual failures.
+    def _failure_backoff(self) -> float:
+        """Compute sleep duration based on consecutive LLM failures.
 
         Returns seconds to sleep:
           0-2 failures: 30s (normal)
           3-5 failures: 300s (5 min)
           6+  failures: 900s (15 min)
         """
-        count = self._consecutive_dual_failures
+        count = self._consecutive_failures
         if count <= 2:
             return 30.0
         if count <= 5:
@@ -526,7 +493,7 @@ class ArbCaptain:
             except Exception as e:
                 logger.error(f"[CAPTAIN:ERROR] cycle={self._cycle_count + 1} error={e}\n{traceback.format_exc()}")
                 self._record_error(str(e))
-                sleep_s = self._dual_failure_backoff()
+                sleep_s = self._failure_backoff()
                 await asyncio.sleep(sleep_s)
 
     async def _run_loop_legacy(self) -> None:
@@ -548,7 +515,7 @@ class ArbCaptain:
             except Exception as e:
                 logger.error(f"[CAPTAIN:ERROR] cycle={self._cycle_count + 1} error={e}\n{traceback.format_exc()}")
                 self._record_error(str(e))
-                sleep_s = self._dual_failure_backoff()
+                sleep_s = self._failure_backoff()
                 await asyncio.sleep(sleep_s)
 
     async def _run_with_timeout(self, coro, mode: str) -> None:
@@ -562,7 +529,8 @@ class ArbCaptain:
             raise
         except asyncio.TimeoutError:
             cycle_num = self._cycle_count + 1
-            logger.warning(f"[CAPTAIN:TIMEOUT] cycle={cycle_num} mode={mode} exceeded {cycle_timeout:.0f}s")
+            self._consecutive_timeouts += 1
+            logger.warning(f"[CAPTAIN:TIMEOUT] cycle={cycle_num} mode={mode} exceeded {cycle_timeout:.0f}s (consecutive={self._consecutive_timeouts})")
             logger.info(f"[CAPTAIN:CYCLE_END] cycle={cycle_num} mode={mode} status=timeout duration={cycle_timeout:.0f}s")
             self._record_error(f"timeout_{mode}_{cycle_num}")
             # Emit timeout event so frontend knows the cycle ended
@@ -575,6 +543,15 @@ class ArbCaptain:
                     "status": "timeout",
                 },
             })
+            # Escalate if 3+ consecutive timeouts — pause and auto-resume after 15 min
+            if self._consecutive_timeouts >= 3:
+                logger.error(f"[CAPTAIN] {self._consecutive_timeouts} consecutive timeouts - pausing for recovery")
+                await self._emit_event({
+                    "type": "captain_timeout_escalation",
+                    "data": {"consecutive": self._consecutive_timeouts},
+                })
+                self._paused = True
+                asyncio.get_event_loop().call_later(900, lambda: setattr(self, '_paused', False))
 
     async def _wait_for_trigger(
         self, last_strategic: float, last_deep_scan: float,
@@ -601,31 +578,11 @@ class ArbCaptain:
                 portfolio = await self._ctx.build_portfolio_state(gateway)
                 self._cached_portfolio = portfolio
                 self._portfolio_cached_at = time.time()
-                positions_for_router = [
-                    {
-                        "ticker": p.ticker,
-                        "event_ticker": p.event_ticker,
-                        "side": p.side,
-                        "quantity": p.quantity,
-                        "pnl_per_ct": round(p.unrealized_pnl_cents / p.quantity) if p.quantity else 0,
-                    }
-                    for p in portfolio.positions
-                ]
-                router.update_positions(positions_for_router)
+                router.update_positions(self._portfolio_to_router_positions(portfolio))
             except Exception:
                 pass
         elif self._cached_portfolio and router:
-            positions_for_router = [
-                {
-                    "ticker": p.ticker,
-                    "event_ticker": p.event_ticker,
-                    "side": p.side,
-                    "quantity": p.quantity,
-                    "pnl_per_ct": round(p.unrealized_pnl_cents / p.quantity) if p.quantity else 0,
-                }
-                for p in self._cached_portfolio.positions
-            ]
-            router.update_positions(positions_for_router)
+            router.update_positions(self._portfolio_to_router_positions(self._cached_portfolio))
 
         # Wait for attention router notification OR next timer, whichever comes first
         time_to_strategic = max(0.1, self._strategic_interval - (now - last_strategic))
@@ -645,6 +602,20 @@ class ArbCaptain:
         if now - last_deep_scan >= self._deep_scan_interval:
             return "deep_scan"
         return "strategic"
+
+    @staticmethod
+    def _portfolio_to_router_positions(portfolio: PortfolioState) -> List[Dict]:
+        """Convert PortfolioState positions to the format AttentionRouter expects."""
+        return [
+            {
+                "ticker": p.ticker,
+                "event_ticker": p.event_ticker,
+                "side": p.side,
+                "quantity": p.quantity,
+                "pnl_per_ct": round(p.unrealized_pnl_cents / p.quantity) if p.quantity else 0,
+            }
+            for p in portfolio.positions
+        ]
 
     # ------------------------------------------------------------------
     # Cycle pre-work (shared across all modes)
@@ -686,12 +657,14 @@ class ArbCaptain:
     async def _cycle_postamble(self, mode: str, cycle_num: int, cycle_start: float,
                                 portfolio: PortfolioState) -> None:
         """Shared post-cycle logging."""
+        # Successful cycle completion — reset timeout escalation
+        self._consecutive_timeouts = 0
         cycle_duration = time.time() - cycle_start
         balance_str = f"${portfolio.balance_dollars}" if portfolio.balance_cents else "?"
         tools_str = ",".join(f"{k}:{v}" for k, v in sorted(self._current_cycle_tools.items())) or "none"
 
         # Estimate LLM cost for this cycle
-        active_model = self._fallback_model_name if self._using_fallback else self._model_name
+        active_model = self._model_name
         rates = _MODEL_COST_RATES.get(active_model, {"input": 3.0, "output": 15.0})
         est_cost = (
             self._cycle_input_tokens * rates["input"] / 1_000_000
@@ -733,6 +706,45 @@ class ArbCaptain:
             return portfolio
         return PortfolioState()
 
+    def _fetch_health_snapshot(self) -> Optional[Dict]:
+        """Fetch health status from AccountHealthService. Returns None on failure."""
+        from .tools import _ctx as tool_ctx
+        if not (tool_ctx and tool_ctx.health_service):
+            return None
+        try:
+            hs = tool_ctx.health_service.get_health_status()
+            return {
+                "drawdown_pct": hs.drawdown_pct,
+                "total_realized_pnl_cents": hs.total_realized_pnl_cents,
+                "settlement_count_session": hs.settlement_count_session,
+            }
+        except Exception:
+            return None
+
+    def _fetch_early_bird(self, mode: str) -> Optional[list]:
+        """Fetch early bird opportunities. Returns None on failure."""
+        from .tools import _ctx as tool_ctx
+        if not (tool_ctx and tool_ctx.early_bird_service):
+            return None
+        try:
+            return tool_ctx.early_bird_service.get_recent_opportunities()
+        except Exception as e:
+            logger.debug(f"[CAPTAIN:{mode.upper()}] Early bird fetch failed: {e}")
+            return None
+
+    def _fetch_decision_accuracy(self) -> Optional[Dict]:
+        """Fetch cached decision accuracy stats. Returns None on failure."""
+        from .tools import _ctx as tool_ctx
+        if not (tool_ctx and tool_ctx.health_service):
+            return None
+        try:
+            cached = tool_ctx.health_service._cached_accuracy
+            if cached:
+                return cached.model_dump() if hasattr(cached, "model_dump") else cached
+        except Exception:
+            pass
+        return None
+
     async def _invoke_agent(self, mode: str, cycle_num: int, prompt: str, trigger_items: int = 0) -> None:
         """Shared pattern: emit cycle_start, run agent, emit completion events."""
         await self._emit_event({
@@ -763,11 +775,12 @@ class ArbCaptain:
 
     async def _run_reactive(self, items) -> None:
         """Reactive cycle: respond to high-urgency attention items."""
-        from .models import AttentionItem
         cycle_num = self._cycle_preamble(mode="reactive")
         cycle_start = time.time()
         self._reactive_count += 1
 
+        # Bust portfolio cache for fresh data in reactive mode
+        self._portfolio_cached_at = 0
         portfolio = await self._get_portfolio()
         sniper_status = self._ctx.build_sniper_status(self._sniper_ref)
 
@@ -861,38 +874,9 @@ class ArbCaptain:
             })
             return
 
-        # Pre-inject health so Captain doesn't need to call get_account_health
-        health = None
-        from .tools import _ctx as tool_ctx
-        if tool_ctx and tool_ctx.health_service:
-            try:
-                hs = tool_ctx.health_service.get_health_status()
-                health = {
-                    "drawdown_pct": hs.drawdown_pct,
-                    "total_realized_pnl_cents": hs.total_realized_pnl_cents,
-                    "settlement_count_session": hs.settlement_count_session,
-                }
-            except Exception:
-                pass
-
-        # Fetch early bird opportunities
-        early_bird_opportunities = None
-        if tool_ctx and tool_ctx.early_bird_service:
-            try:
-                early_bird_opportunities = tool_ctx.early_bird_service.get_recent_opportunities()
-            except Exception as e:
-                logger.debug(f"[CAPTAIN:STRATEGIC] Early bird fetch failed: {e}")
-
-        # Fetch decision accuracy stats (cached in health service)
-        decision_accuracy = None
-        if tool_ctx and tool_ctx.health_service:
-            try:
-                cached = tool_ctx.health_service._cached_accuracy
-                if cached:
-                    decision_accuracy = cached.model_dump() if hasattr(cached, "model_dump") else cached
-            except Exception:
-                pass
-
+        health = self._fetch_health_snapshot()
+        early_bird_opportunities = self._fetch_early_bird("strategic")
+        decision_accuracy = self._fetch_decision_accuracy()
         mm_state = self._get_mm_state()
 
         body = self._ctx.build_strategic_context(
@@ -937,29 +921,11 @@ class ArbCaptain:
             })
             return
 
-        # Health snapshot
-        health = None
-        from .tools import _ctx as tool_ctx
-        if tool_ctx and tool_ctx.health_service:
-            try:
-                hs = tool_ctx.health_service.get_health_status()
-                health = {
-                    "drawdown_pct": hs.drawdown_pct,
-                    "total_realized_pnl_cents": hs.total_realized_pnl_cents,
-                    "settlement_count_session": hs.settlement_count_session,
-                }
-            except Exception:
-                pass
-
-        # Fetch early bird opportunities
-        early_bird_opportunities = None
-        if tool_ctx and tool_ctx.early_bird_service:
-            try:
-                early_bird_opportunities = tool_ctx.early_bird_service.get_recent_opportunities()
-            except Exception as e:
-                logger.debug(f"[CAPTAIN:DEEP_SCAN] Early bird fetch failed: {e}")
+        health = self._fetch_health_snapshot()
+        early_bird_opportunities = self._fetch_early_bird("deep_scan")
 
         # Parallelize independent memory/DB fetches (each with per-op timeout)
+        from .tools import _ctx as tool_ctx
         async def _fetch_trade_memories():
             if not (tool_ctx and tool_ctx.memory):
                 return None
@@ -1055,19 +1021,15 @@ class ArbCaptain:
             logger.warning("[CAPTAIN:DEEP_SCAN] Data fetch gather exceeded 15s, continuing with no enrichment")
             results = [None, None, None, None]
 
-        trade_memories = results[0] if not isinstance(results[0], Exception) else None
-        news_memories = results[1] if not isinstance(results[1], Exception) else None
-        market_movers = results[2] if not isinstance(results[2], Exception) else None
-        swing_patterns = results[3] if not isinstance(results[3], Exception) else None
-
-        if isinstance(results[0], Exception):
-            logger.warning(f"[CAPTAIN:DEEP_SCAN] trade_memories fetch failed: {results[0]}")
-        if isinstance(results[1], Exception):
-            logger.warning(f"[CAPTAIN:DEEP_SCAN] news_memories fetch failed: {results[1]}")
-        if isinstance(results[2], Exception):
-            logger.warning(f"[CAPTAIN:DEEP_SCAN] market_movers fetch failed: {results[2]}")
-        if isinstance(results[3], Exception):
-            logger.warning(f"[CAPTAIN:DEEP_SCAN] swing_patterns fetch failed: {results[3]}")
+        fetch_names = ("trade_memories", "news_memories", "market_movers", "swing_patterns")
+        resolved = []
+        for name, result in zip(fetch_names, results):
+            if isinstance(result, Exception):
+                logger.warning(f"[CAPTAIN:DEEP_SCAN] {name} fetch failed: {result}")
+                resolved.append(None)
+            else:
+                resolved.append(result)
+        trade_memories, news_memories, market_movers, swing_patterns = resolved
 
         await self._emit_event({
             "type": "agent_message",
@@ -1076,16 +1038,7 @@ class ArbCaptain:
             "detail": "Data loaded, invoking agent...",
         })
 
-        # Fetch decision accuracy stats (cached in health service)
-        decision_accuracy = None
-        if tool_ctx and tool_ctx.health_service:
-            try:
-                cached = tool_ctx.health_service._cached_accuracy
-                if cached:
-                    decision_accuracy = cached.model_dump() if hasattr(cached, "model_dump") else cached
-            except Exception:
-                pass
-
+        decision_accuracy = self._fetch_decision_accuracy()
         mm_state = self._get_mm_state()
 
         body = self._ctx.build_deep_scan_context(
@@ -1106,52 +1059,8 @@ class ArbCaptain:
         await self._invoke_agent("deep_scan", cycle_num, prompt)
         await self._cycle_postamble("deep_scan", cycle_num, cycle_start, portfolio)
 
-    def _swap_to_fallback(self) -> None:
-        """Swap the agent to the fallback model."""
-        if self._using_fallback:
-            return
-        logger.warning(
-            f"[CAPTAIN:FAILOVER] Primary model unhealthy "
-            f"(failures={self._model_health.consecutive_failures}), "
-            f"swapping to fallback: {self._fallback_model_name}"
-        )
-        resolved_model = init_chat_model(self._fallback_model_name)
-        self._agent = create_agent(
-            resolved_model,
-            tools=ALL_TOOLS,
-            system_prompt=self._system_prompt,
-            middleware=self._captain_middleware,
-            cache=self._cache,
-        )
-        self._using_fallback = True
-
-    def _swap_to_primary(self) -> None:
-        """Swap back to the primary model after health recovery."""
-        if not self._using_fallback:
-            return
-        if not self._model_health.is_healthy:
-            return
-        logger.info(
-            f"[CAPTAIN:RECOVERY] Primary model recovered, swapping back to: {self._model_name}"
-        )
-        resolved_model = init_chat_model(self._model_name)
-        self._agent = create_agent(
-            resolved_model,
-            tools=ALL_TOOLS,
-            system_prompt=self._system_prompt,
-            middleware=self._captain_middleware,
-            cache=self._cache,
-        )
-        self._using_fallback = False
-
     async def _run_agent(self, prompt: str, mode: str = "deep_scan") -> Optional[str]:
         """Run the agent, streaming categorized tool call events."""
-        # Check model health and failover if needed
-        if not self._model_health.is_healthy:
-            self._swap_to_fallback()
-        elif self._using_fallback and self._model_health.is_healthy:
-            self._swap_to_primary()
-
         try:
             result_text = None
             token_buffer = []
@@ -1296,20 +1205,11 @@ class ArbCaptain:
                     "text": "".join(token_buffer),
                 })
 
-            self._model_health.record_success()
-            self._consecutive_dual_failures = 0
+            self._consecutive_failures = 0
             return result_text
 
         except Exception as e:
-            self._model_health.record_failure()
-            # Track dual failures: if using fallback and it also fails, both models are down
-            if self._using_fallback:
-                self._consecutive_dual_failures += 1
-                backoff = 300 if self._consecutive_dual_failures <= 5 else 900
-                logger.warning(
-                    f"[CAPTAIN:DUAL_FAILURE] #{self._consecutive_dual_failures}, "
-                    f"backing off {backoff}s"
-                )
+            self._consecutive_failures += 1
             logger.error(f"[CAPTAIN:ERROR] agent error: {e}")
             await self._emit_event({
                 "type": "agent_message",
@@ -1366,8 +1266,6 @@ class ArbCaptain:
             "last_cycle_at": self._last_cycle_at,
             "errors": self._errors[-5:],
             "model": self._model_name,
-            "active_model": self._fallback_model_name if self._using_fallback else self._model_name,
-            "using_fallback": self._using_fallback,
             "cycle_interval": self._cycle_interval,
             "version": "v2",
             "attention_driven": has_router,
@@ -1380,10 +1278,5 @@ class ArbCaptain:
                 "strategic": self._strategic_interval,
                 "deep_scan": self._deep_scan_interval,
             },
-            "model_health": {
-                "consecutive_failures": self._model_health.consecutive_failures,
-                "total_failures": self._model_health.total_failures,
-                "total_successes": self._model_health.total_successes,
-                "is_healthy": self._model_health.is_healthy,
-            },
+            "consecutive_timeouts": self._consecutive_timeouts,
         }

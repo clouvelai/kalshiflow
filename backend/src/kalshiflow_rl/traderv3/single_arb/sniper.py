@@ -726,7 +726,15 @@ class Sniper:
         return {"ticker": leg.ticker, "side": leg.side, "contracts": 0, "price_cents": leg.price_cents}
 
     async def _cancel_leg_safe(self, order_id: str) -> bool:
-        """Cancel a single order with timeout. Returns True on success."""
+        """Cancel a single order with timeout. Returns True on success.
+
+        On failure, only removes from active_order_ids if the order is confirmed
+        to be in a terminal state (404 = gone from exchange). For timeouts and
+        network errors, keeps the order tracked conservatively — the reconciliation
+        loop (_release_sniper_capital / reconcile_capital) will clean it up.
+        """
+        from ..gateway.errors import KalshiNotFoundError, KalshiConnectionError
+
         try:
             await asyncio.wait_for(
                 self._gateway.cancel_order(order_id),
@@ -735,12 +743,34 @@ class Sniper:
             self.state.active_order_ids.discard(order_id)
             return True
         except asyncio.TimeoutError:
-            logger.warning(f"[SNIPER:UNWIND] Cancel timeout for {order_id[:8]}...")
+            # Can't confirm cancel went through — keep tracking conservatively
+            logger.warning(
+                f"[SNIPER:UNWIND] Cancel timeout for {order_id[:8]}... "
+                f"(keeping in active_order_ids for reconciliation)"
+            )
+            return False
+        except KalshiNotFoundError:
+            # 404 = order no longer exists on exchange (filled, cancelled, expired)
+            # Safe to remove from tracking — it's definitely terminal
+            logger.debug(
+                f"[SNIPER:UNWIND] Cancel got 404 for {order_id[:8]}... "
+                f"(order already terminal, removing from tracking)"
+            )
+            self.state.active_order_ids.discard(order_id)
+            return False
+        except KalshiConnectionError as e:
+            # Network error — can't confirm order state, keep tracking
+            logger.warning(
+                f"[SNIPER:UNWIND] Cancel network error for {order_id[:8]}...: {e} "
+                f"(keeping in active_order_ids for reconciliation)"
+            )
             return False
         except Exception as e:
-            # Order may have already filled or expired — not an error
-            logger.debug(f"[SNIPER:UNWIND] Cancel failed for {order_id[:8]}...: {e}")
-            self.state.active_order_ids.discard(order_id)
+            # Unknown error — keep tracking conservatively
+            logger.warning(
+                f"[SNIPER:UNWIND] Cancel failed for {order_id[:8]}...: {e} "
+                f"(keeping in active_order_ids for reconciliation)"
+            )
             return False
 
     async def _place_leg(

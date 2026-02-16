@@ -146,6 +146,8 @@ class V3Config:
 
     # VPIN Configuration
     vpin_bucket_size: int = 20                       # V3_VPIN_BUCKET_SIZE
+    vpin_alert_threshold: float = 0.85               # V3_VPIN_ALERT_THRESHOLD - both MM and Sniper respond
+    vpin_critical_threshold: float = 0.95             # V3_VPIN_CRITICAL_THRESHOLD - Sniper pauses, MM pulls
 
     # Sniper Execution Layer Configuration
     sniper_enabled: bool = False                    # V3_SNIPER_ENABLED - master kill switch
@@ -194,7 +196,6 @@ class V3Config:
 
     # LLM Model Configuration (centralized tiers)
     model_captain: str = "claude-sonnet-4-20250514"      # V3_MODEL_CAPTAIN
-    model_captain_fallback: str = "claude-haiku-4-5-20251001"  # V3_MODEL_CAPTAIN_FALLBACK
     model_subagent: str = "claude-haiku-4-5-20251001"    # V3_MODEL_SUBAGENT
     model_utility: str = "gemini-2.0-flash"              # V3_MODEL_UTILITY
     model_embedding: str = "text-embedding-3-small"      # V3_MODEL_EMBEDDING
@@ -404,6 +405,8 @@ class V3Config:
 
         # VPIN configuration
         vpin_bucket_size = int(os.environ.get("V3_VPIN_BUCKET_SIZE", "20"))
+        vpin_alert_threshold = float(os.environ.get("V3_VPIN_ALERT_THRESHOLD", "0.85"))
+        vpin_critical_threshold = float(os.environ.get("V3_VPIN_CRITICAL_THRESHOLD", "0.95"))
 
         # Sniper execution layer configuration
         sniper_enabled = os.environ.get("V3_SNIPER_ENABLED", "false").lower() == "true"
@@ -453,7 +456,6 @@ class V3Config:
 
         # LLM Model Configuration (centralized tiers)
         model_captain = os.environ.get("V3_MODEL_CAPTAIN", "claude-sonnet-4-20250514")
-        model_captain_fallback = os.environ.get("V3_MODEL_CAPTAIN_FALLBACK", "claude-haiku-4-5-20251001")
         model_subagent = os.environ.get("V3_MODEL_SUBAGENT", "claude-haiku-4-5-20251001")
         model_utility = os.environ.get("V3_MODEL_UTILITY", "gemini-2.0-flash")
         model_embedding = os.environ.get("V3_MODEL_EMBEDDING", "text-embedding-3-small")
@@ -560,7 +562,6 @@ class V3Config:
             single_arb_cheval_model=single_arb_cheval_model,
             min_captain_edge_cents=min_captain_edge_cents,
             model_captain=model_captain,
-            model_captain_fallback=model_captain_fallback,
             model_subagent=model_subagent,
             model_utility=model_utility,
             model_embedding=model_embedding,
@@ -572,6 +573,8 @@ class V3Config:
             prod_private_key_content=prod_private_key_content,
             slack_webhook_url=slack_webhook_url,
             vpin_bucket_size=vpin_bucket_size,
+            vpin_alert_threshold=vpin_alert_threshold,
+            vpin_critical_threshold=vpin_critical_threshold,
             sniper_enabled=sniper_enabled,
             sniper_max_position=sniper_max_position,
             sniper_max_capital=sniper_max_capital,

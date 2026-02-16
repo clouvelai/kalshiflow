@@ -341,27 +341,8 @@ class SingleArbCoordinator:
             except Exception as e:
                 logger.warning(f"[SWING] Setup failed: {e}")
 
-        # 9. Create monitor
-        self._monitor = EventArbMonitor(
-            index=self._index,
-            event_bus=self._event_bus,
-            trading_client=market_client,
-            config=self._config,
-            broadcast_callback=self._broadcast,
-            opportunity_callback=self._on_opportunity,
-        )
-        await self._monitor.start()
-
-        # 9b. Prefetch all orderbooks via REST so index is ready immediately
-        #     (avoids 30-60s wait for WS snapshots on thin/inactive markets)
-        await self._broadcast_startup("Fetching orderbook data via REST", 7, 10)
-        try:
-            prefetched = await self._monitor.prefetch_all_orderbooks()
-            logger.info(f"[PREFETCH] {prefetched} markets prefetched, index ready={self._index.is_ready}")
-        except Exception as e:
-            logger.warning(f"[PREFETCH] Orderbook prefetch failed: {e}")
-
-        # 9c. Create AttentionRouter + AutoActionManager
+        # 9. Create AttentionRouter + AutoActionManager BEFORE Monitor
+        #    so early market events are captured (router queues them until Captain starts)
         try:
             from .attention import AttentionRouter
             from .auto_actions import AutoActionManager
@@ -433,6 +414,26 @@ class SingleArbCoordinator:
             logger.warning(f"[ATTENTION] AttentionRouter setup failed, Captain will use legacy mode: {e}")
             self._attention_router = None
             self._auto_actions = None
+
+        # 9b. Create monitor (AttentionRouter already subscribed to EventBus above)
+        self._monitor = EventArbMonitor(
+            index=self._index,
+            event_bus=self._event_bus,
+            trading_client=market_client,
+            config=self._config,
+            broadcast_callback=self._broadcast,
+            opportunity_callback=self._on_opportunity,
+        )
+        await self._monitor.start()
+
+        # 9c. Prefetch all orderbooks via REST so index is ready immediately
+        #     (avoids 30-60s wait for WS snapshots on thin/inactive markets)
+        await self._broadcast_startup("Fetching orderbook data via REST", 7, 10)
+        try:
+            prefetched = await self._monitor.prefetch_all_orderbooks()
+            logger.info(f"[PREFETCH] {prefetched} markets prefetched, index ready={self._index.is_ready}")
+        except Exception as e:
+            logger.warning(f"[PREFETCH] Orderbook prefetch failed: {e}")
 
         # 9d. Setup QuoteEngine (MM folded into Captain) if enabled
         if self._config.mm_enabled:
@@ -1196,10 +1197,10 @@ class SingleArbCoordinator:
                         # Partially filled then disappeared (cancelled remainder or expired)
                         new_status = "cancelled"
                     else:
-                        # Never filled - check TTL
+                        # Never filled - check TTL (5s grace for API propagation delay)
                         placed_at = prev.get("placed_at", now)
                         ttl = prev.get("ttl_seconds", 60)
-                        if now - placed_at > ttl:
+                        if now - placed_at >= ttl + 5:
                             new_status = "expired"
                         else:
                             new_status = "cancelled"
@@ -1276,7 +1277,8 @@ class SingleArbCoordinator:
         """Release sniper capital_active for orders in terminal states.
 
         Scans tracked orders: for orders placed by sniper that have reached terminal
-        status (executed, expired, cancelled), release the corresponding capital.
+        status (executed, expired, cancelled), release only the unfilled portion's
+        capital. Filled contracts are deployed in positions, not resting capital.
         """
         if not self._sniper:
             return
@@ -1290,10 +1292,16 @@ class SingleArbCoordinator:
             tracked = self._tracked_orders.get(oid, {})
             status = tracked.get("status", "")
             if status in ("executed", "filled", "expired", "canceled", "cancelled"):
-                cost = tracked.get("contracts", 0) * tracked.get("price_cents", 0)
-                if cost > 0:
-                    self._sniper.state.capital_active = max(0, self._sniper.state.capital_active - cost)
-                    released += cost
+                # Release only the unfilled portion — filled contracts are deployed
+                # in positions, not resting capital. remaining_count is set by
+                # _poll_order_statuses from the API; fall back to full contracts
+                # if not yet populated (e.g. order went terminal before first poll).
+                remaining = tracked.get("remaining_count", tracked.get("contracts", 0))
+                price_cents = tracked.get("price_cents", 0)
+                release_cost = remaining * price_cents
+                if release_cost > 0:
+                    self._sniper.state.capital_active = max(0, self._sniper.state.capital_active - release_cost)
+                    released += release_cost
                 self._sniper.state.active_order_ids.discard(oid)
 
         if released > 0:

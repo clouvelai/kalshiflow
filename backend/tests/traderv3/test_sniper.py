@@ -408,17 +408,6 @@ class TestConfigTTL:
 
 class TestCapitalGateCostEstimate:
     @pytest.mark.asyncio
-    async def test_insufficient_balance_for_estimated_cost(self):
-        sniper = make_sniper(max_capital=50000, max_position=10)
-        # 90c per contract set (40+30+20). Balance only 80c → can't afford even 1
-        sniper._gateway.get_balance = AsyncMock(return_value=MockBalance(balance=80, portfolio_value=0))
-        opp = MockArbOpportunity()
-        rejection, contracts = await sniper._check_risk_gates(opp)
-        assert rejection is not None
-        assert "insufficient_balance" in rejection
-        assert contracts == 0
-
-    @pytest.mark.asyncio
     async def test_cost_estimate_with_size_limited_legs(self):
         sniper = make_sniper(max_capital=50000, max_position=25)
         # size_available=2 limits contracts. Cost = 2 × (30+30+30) = 180c

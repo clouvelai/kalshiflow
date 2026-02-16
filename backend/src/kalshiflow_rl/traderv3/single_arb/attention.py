@@ -185,6 +185,9 @@ class AttentionRouter:
 
         # Reset notification
         self._notify.clear()
+        # Re-notify if items arrived during drain
+        if self._items:
+            self._notify.set()
 
         return sorted(result, key=lambda x: x.score, reverse=True)
 
@@ -393,6 +396,9 @@ class AttentionRouter:
         # 4. Position P&L
         pnl_score = 0.0
         pnl_summary = ""
+        has_position = any(
+            p.get("event_ticker") == event_ticker for p in self._positions.values()
+        )
         for ticker, pos in self._positions.items():
             if pos.get("event_ticker") != event_ticker:
                 continue
@@ -408,9 +414,6 @@ class AttentionRouter:
         ttc = _time_to_close(event)
         time_score = 0.0
         time_summary = ""
-        has_position = any(
-            p.get("event_ticker") == event_ticker for p in self._positions.values()
-        )
         if ttc is not None and ttc < SETTLEMENT_WARN_HOURS and has_position:
             time_score = WEIGHT_TIME_PRESSURE
             time_summary = f"ttc={ttc:.1f}h with open position"
@@ -450,10 +453,6 @@ class AttentionRouter:
         elif time_score > 0:
             category = "settlement_approaching"
         elif max_vpin >= VPIN_CRITICAL_THRESHOLD:
-            # Only fire regime_change if we have capital at risk in this event
-            has_position = any(
-                p.get("event_ticker") == event_ticker for p in self._positions.values()
-            )
             category = "regime_change" if has_position else "arb_opportunity"
         elif edge_delta > 2.0:
             category = "edge_emergence"
@@ -514,17 +513,18 @@ class AttentionRouter:
             if ttc is not None and ttc < SETTLEMENT_WARN_HOURS:
                 pos_score += WEIGHT_TIME_PRESSURE
                 pos_parts.append(f"ttc={ttc:.1f}h")
-                if pos_score >= WEIGHT_POSITION_PNL:
-                    pass  # keep position_risk
-                else:
+                if pos_score < WEIGHT_POSITION_PNL:
                     pos_category = "settlement_approaching"
 
             if pos_score < SCORE_EMIT_THRESHOLD:
                 continue
 
-            pos_urgency = "immediate" if pos_score >= URGENCY_IMMEDIATE_THRESHOLD else (
-                "high" if pos_score >= URGENCY_HIGH_THRESHOLD else "normal"
-            )
+            if pos_score >= URGENCY_IMMEDIATE_THRESHOLD:
+                pos_urgency = "immediate"
+            elif pos_score >= URGENCY_HIGH_THRESHOLD:
+                pos_urgency = "high"
+            else:
+                pos_urgency = "normal"
 
             pos_item = AttentionItem(
                 event_ticker=event_ticker,

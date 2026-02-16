@@ -23,6 +23,7 @@ def _make_captain(event_callback=None):
     captain._cycle_count = 0
     captain._errors = []
     captain._running = True
+    captain._consecutive_timeouts = 0
 
     return captain
 
@@ -80,8 +81,12 @@ class TestTimeoutEmitsCycleComplete:
         async def dummy_coro():
             pass
 
-        # Mock wait_for to raise TimeoutError (avoids waiting for real timeouts)
-        with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError()):
+        # Mock wait_for to raise TimeoutError (close coro to avoid RuntimeWarning)
+        async def _timeout_wait_for(coro, *, timeout):
+            coro.close()
+            raise asyncio.TimeoutError()
+
+        with patch("asyncio.wait_for", side_effect=_timeout_wait_for):
             await captain._run_with_timeout(dummy_coro(), "reactive")
 
         # Verify captain_cycle_complete with status=timeout was emitted
@@ -102,7 +107,11 @@ class TestTimeoutEmitsCycleComplete:
         async def dummy_coro():
             pass
 
-        with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError()):
+        async def _timeout_wait_for(coro, *, timeout):
+            coro.close()
+            raise asyncio.TimeoutError()
+
+        with patch("asyncio.wait_for", side_effect=_timeout_wait_for):
             await captain._run_with_timeout(dummy_coro(), "deep_scan")
 
         assert "timeout_deep_scan_8" in captain._errors
@@ -117,7 +126,11 @@ class TestTimeoutEmitsCycleComplete:
             async def dummy_coro():
                 pass
 
-            with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError()):
+            async def _timeout_wait_for(coro, *, timeout):
+                coro.close()
+                raise asyncio.TimeoutError()
+
+            with patch("asyncio.wait_for", side_effect=_timeout_wait_for):
                 await captain._run_with_timeout(dummy_coro(), mode)
 
             event = callback.call_args[0][0]

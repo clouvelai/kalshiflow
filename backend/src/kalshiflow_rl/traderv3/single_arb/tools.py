@@ -110,6 +110,8 @@ class ToolContext:
     order_initial_states: Dict[str, dict] = field(default_factory=dict)
     news_cache: collections.OrderedDict = field(default_factory=collections.OrderedDict)
     cycle_capital_spent_cents: int = 0
+    _positions_cache: Optional[List] = field(default=None)
+    _positions_cached_at: float = field(default=0.0)
 
 
 # Module-level context (set by coordinator at startup)
@@ -154,6 +156,28 @@ def cleanup_terminal_orders(max_age_seconds: float = 86400) -> int:
     if stale_ids:
         logger.info(f"[TOOLS:CLEANUP] Removed {len(stale_ids)} stale order entries")
     return len(stale_ids)
+
+
+async def _get_cached_positions(event_ticker: Optional[str] = None, ttl: float = 10.0) -> List:
+    """Fetch positions with a short TTL cache to avoid redundant API calls.
+
+    Args:
+        event_ticker: Optional event ticker to filter positions
+        ttl: Cache TTL in seconds (default 10s)
+
+    Returns:
+        List of position objects from the API
+    """
+    now = time.time()
+    if _ctx._positions_cache is not None and (now - _ctx._positions_cached_at) < ttl:
+        return _ctx._positions_cache
+    positions = await retry_api(
+        lambda: _ctx.gateway.get_positions(event_ticker=event_ticker),
+        max_retries=2, label="get_positions_cached",
+    )
+    _ctx._positions_cache = positions
+    _ctx._positions_cached_at = now
+    return positions
 
 
 async def _fetch_balance_with_budget_check(label: str) -> tuple:
@@ -260,9 +284,7 @@ async def place_order(
     if action == "buy":
         try:
             event_for_ticker = _ctx.index.get_event_for_ticker(ticker) if _ctx.index else None
-            raw_positions = await gw.get_positions(
-                event_ticker=event_for_ticker,
-            )
+            raw_positions = await _get_cached_positions(event_ticker=event_for_ticker)
             for pos in raw_positions:
                 pos_ticker = pos.ticker if hasattr(pos, "ticker") else pos.get("ticker")
                 pos_count = pos.position if hasattr(pos, "position") else pos.get("position", 0)
@@ -356,6 +378,9 @@ async def place_order(
                 "placed_at": time.time(), "ttl_seconds": session.order_ttl,
                 "status": status,
             }
+
+        # Bust position cache after successful placement
+        _ctx._positions_cache = None
 
         # Track cycle capital spend
         _ctx.cycle_capital_spent_cents += contracts * price_cents
