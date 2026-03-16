@@ -13,8 +13,10 @@ from unittest.mock import AsyncMock, MagicMock
 from tests.traderv3.conftest import make_event_meta, make_index, make_market_meta
 
 from kalshiflow_rl.traderv3.single_arb.context_builder import (
+    ContextBudget,
     ContextBuilder,
     _compute_regime,
+    _estimate_tokens,
     _event_semantics,
     _market_snapshot,
     _time_to_close,
@@ -27,6 +29,63 @@ from kalshiflow_rl.traderv3.single_arb.models import (
     PortfolioState,
     SniperStatus,
 )
+
+
+# ===========================================================================
+# TestContextBudget
+# ===========================================================================
+
+class TestContextBudget:
+    def test_add_within_budget(self):
+        cb = ContextBudget(budget=1000)
+        assert cb.add("SEC1", "short text") is True
+        assert cb.tokens_used > 0
+        assert len(cb.parts) == 1
+        assert len(cb.dropped) == 0
+
+    def test_add_exceeds_budget(self):
+        cb = ContextBudget(budget=10)  # Very small budget
+        # This text is ~10 chars = ~2 tokens, but budget*0.9 = 9 tokens, so first should fit
+        assert cb.add("SEC1", "hello") is True
+        # Add a much larger text that exceeds remaining budget
+        assert cb.add("SEC2", "x" * 100) is False
+        assert "SEC2" in cb.dropped
+
+    def test_build_joins_parts(self):
+        cb = ContextBudget(budget=10000)
+        cb.add("A", "line one")
+        cb.add("B", "line two")
+        result = cb.build()
+        assert "line one" in result
+        assert "line two" in result
+        assert "\n\n" not in result  # joined with \n (via parts list in build methods)
+
+    def test_build_with_suffix(self):
+        cb = ContextBudget(budget=10000)
+        cb.add("A", "content")
+        result = cb.build(suffix="ACTION: do something")
+        assert "ACTION: do something" in result
+
+    def test_build_includes_truncation_warning(self):
+        cb = ContextBudget(budget=10)
+        cb.add("A", "ok")
+        cb.add("BIG", "x" * 200)  # will be dropped
+        result = cb.build()
+        assert "CONTEXT TRUNCATED" in result
+        assert "BIG" in result
+
+    def test_no_truncation_warning_when_nothing_dropped(self):
+        cb = ContextBudget(budget=10000)
+        cb.add("A", "small text")
+        result = cb.build()
+        assert "CONTEXT TRUNCATED" not in result
+
+    def test_multiple_drops_tracked(self):
+        cb = ContextBudget(budget=10)
+        cb.add("A", "ok")
+        cb.add("B", "x" * 200)
+        cb.add("C", "x" * 200)
+        assert cb.dropped == ["B", "C"]
 
 
 # ===========================================================================

@@ -39,6 +39,42 @@ def _estimate_tokens(text: str) -> int:
     return len(text) // 4
 
 
+class ContextBudget:
+    """Token-budgeted section accumulator.
+
+    Replaces the repeated _add() closure in each build_*_context method.
+    Tracks token usage and drops sections that would exceed the budget.
+    """
+
+    def __init__(self, budget: int):
+        self.budget = budget
+        self.parts: list[str] = []
+        self.tokens_used: int = 0
+        self.dropped: list[str] = []
+
+    def add(self, section_name: str, text: str) -> bool:
+        """Add section if within budget. Returns True if added."""
+        cost = _estimate_tokens(text)
+        if self.tokens_used + cost > self.budget * 0.9:
+            logger.debug(f"Context truncated: {section_name} omitted, {self.tokens_used}/{self.budget} tokens")
+            self.dropped.append(section_name)
+            return False
+        self.parts.append(text)
+        self.tokens_used += cost
+        return True
+
+    def build(self, suffix: str = "") -> str:
+        """Join all parts, appending truncation warning and suffix."""
+        if self.dropped:
+            self.parts.append(
+                f"\nCONTEXT TRUNCATED: Omitted sections: {self.dropped} due to token budget. "
+                "Data may be incomplete -- call get_market_state for fresh data if needed."
+            )
+        if suffix:
+            self.parts.append(suffix)
+        return "\n".join(self.parts)
+
+
 def _fmt_balance(portfolio: "PortfolioState", subaccount: int = 0) -> str:
     """Format balance for prompt with subaccount-aware diagnostics."""
     if portfolio.balance_dollars is None:
@@ -309,28 +345,13 @@ class ContextBuilder:
 
         Contains ONLY attention items + relevant positions. ~200-400 tokens.
         """
-        budget = REACTIVE_TOKEN_BUDGET
-        parts = []
-        tokens_used = 0
-        dropped_sections = []
-
-        def _add(section_name: str, text: str) -> bool:
-            """Add section if within budget. Returns True if added."""
-            nonlocal tokens_used
-            cost = _estimate_tokens(text)
-            if tokens_used + cost > budget * 0.9:
-                logger.debug(f"Context truncated: {section_name} omitted, {tokens_used}/{budget} tokens")
-                dropped_sections.append(section_name)
-                return False
-            parts.append(text)
-            tokens_used += cost
-            return True
+        cb = ContextBudget(REACTIVE_TOKEN_BUDGET)
 
         # Attention items (highest priority)
         attn_lines = ["ATTENTION:"]
         for i, item in enumerate(items, 1):
             attn_lines.append(f"  {i}. {item.to_prompt()}")
-        _add("ATTENTION", "\n".join(attn_lines))
+        cb.add("ATTENTION", "\n".join(attn_lines))
 
         # Compact portfolio
         if portfolio.positions:
@@ -352,13 +373,13 @@ class ContextBuilder:
                         f"  {p.ticker} {p.side} {p.quantity}ct "
                         f"exit={p.exit_price} pnl={pnl_ct:+d}c/ct"
                     )
-            _add("PORTFOLIO", "\n".join(portfolio_lines))
+            cb.add("PORTFOLIO", "\n".join(portfolio_lines))
         else:
-            _add("PORTFOLIO", f"PORTFOLIO: balance={_fmt_balance(portfolio, self._subaccount)}, no positions")
+            cb.add("PORTFOLIO", f"PORTFOLIO: balance={_fmt_balance(portfolio, self._subaccount)}, no positions")
 
         # Sniper (one line)
         if sniper_status and sniper_status.enabled:
-            _add("SNIPER",
+            cb.add("SNIPER",
                 f"SNIPER: {sniper_status.total_arbs_executed} arbs, "
                 f"capital_active={sniper_status.capital_in_flight + sniper_status.capital_in_positions}c"
             )
@@ -377,7 +398,7 @@ class ContextBuilder:
                 if d.get("levels"):
                     detail_parts.append(f"levels={d['levels']}")
                 sweep_lines.append(" ".join(detail_parts))
-            _add("SWEEP_DETAIL", "\n".join(sweep_lines))
+            cb.add("SWEEP_DETAIL", "\n".join(sweep_lines))
 
         # After ATTENTION items, if any are early_bird, add detail
         early_bird_items = [i for i in items if i.category == "early_bird"]
@@ -393,19 +414,12 @@ class ContextBuilder:
                 if d.get("early_bird_score"):
                     detail_parts.append(f"score={d['early_bird_score']:.0f}")
                 eb_lines.append(" ".join(detail_parts))
-            _add("EARLY_BIRD_DETAIL", "\n".join(eb_lines))
+            cb.add("EARLY_BIRD_DETAIL", "\n".join(eb_lines))
 
-        if dropped_sections:
-            parts.append(
-                f"\nCONTEXT TRUNCATED: Omitted sections: {dropped_sections} due to token budget. "
-                "Data may be incomplete -- call get_market_state for fresh data if needed."
-            )
-
-        parts.append(
-            "ACTION: Respond to attention items above ONLY. Trade, exit, or note why you pass. "
+        return cb.build(
+            suffix="ACTION: Respond to attention items above ONLY. Trade, exit, or note why you pass. "
             "Do NOT plan strategy, research unrelated events, or call write_todos in reactive mode."
         )
-        return "\n".join(parts)
 
     def build_strategic_context(
         self,
@@ -423,22 +437,7 @@ class ContextBuilder:
         Summary of portfolio, sub-threshold attention items, sniper stats, task ledger.
         Health is pre-injected so the LLM doesn't need to call get_account_health.
         """
-        budget = STRATEGIC_TOKEN_BUDGET
-        parts = []
-        tokens_used = 0
-        dropped_sections = []
-
-        def _add(section_name: str, text: str) -> bool:
-            """Add section if within budget. Returns True if added."""
-            nonlocal tokens_used
-            cost = _estimate_tokens(text)
-            if tokens_used + cost > budget * 0.9:
-                logger.debug(f"Context truncated: {section_name} omitted, {tokens_used}/{budget} tokens")
-                dropped_sections.append(section_name)
-                return False
-            parts.append(text)
-            tokens_used += cost
-            return True
+        cb = ContextBudget(STRATEGIC_TOKEN_BUDGET)
 
         # Portfolio summary (high priority)
         if portfolio.positions:
@@ -453,13 +452,13 @@ class ContextBuilder:
                     f"  {p.ticker} {p.side} {p.quantity}ct "
                     f"exit={p.exit_price} pnl={pnl_ct:+d}c/ct"
                 )
-            _add("PORTFOLIO", "\n".join(portfolio_lines))
+            cb.add("PORTFOLIO", "\n".join(portfolio_lines))
         else:
-            _add("PORTFOLIO", f"PORTFOLIO: balance={_fmt_balance(portfolio, self._subaccount)}, no positions")
+            cb.add("PORTFOLIO", f"PORTFOLIO: balance={_fmt_balance(portfolio, self._subaccount)}, no positions")
 
         # Health (pre-injected — saves a tool call)
         if health:
-            _add("HEALTH",
+            cb.add("HEALTH",
                 f"HEALTH: drawdown={health.get('drawdown_pct', 0):.1f}%, "
                 f"realized_pnl={health.get('total_realized_pnl_cents', 0)}c, "
                 f"settlements={health.get('settlement_count_session', 0)}"
@@ -473,7 +472,7 @@ class ContextBuilder:
             accuracy = decision_accuracy.get("direction_accuracy_pct", 0)
             avg_pnl = decision_accuracy.get("avg_hypothetical_pnl", 0)
             fill_pct = decision_accuracy.get("would_have_filled_pct", 0)
-            _add("DECISIONS",
+            cb.add("DECISIONS",
                 f"DECISIONS (24h): {total} orders, {correct}/{with_outcomes} direction-correct "
                 f"({accuracy:.0f}%), avg_pnl={avg_pnl:+.1f}c/trade, "
                 f"{fill_pct:.0f}% would-have-filled"
@@ -493,7 +492,7 @@ class ContextBuilder:
                 if opp.get("age_seconds"):
                     opp_parts.append(f"age={opp['age_seconds']:.0f}s")
                 eb_lines.append(" ".join(opp_parts))
-            _add("EARLY_BIRD", "\n".join(eb_lines))
+            cb.add("EARLY_BIRD", "\n".join(eb_lines))
 
         # Pending attention (sub-threshold items for awareness)
         if pending_items:
@@ -502,7 +501,7 @@ class ContextBuilder:
                 attn_lines.append(f"  - {item.to_prompt()}")
             if any(item.category == "early_bird" for item in pending_items):
                 attn_lines.append("TIP: Early bird opportunities detected. Call get_early_bird_opportunities for details.")
-            _add("PENDING_ATTENTION", "\n".join(attn_lines))
+            cb.add("PENDING_ATTENTION", "\n".join(attn_lines))
 
         # Sniper stats
         if sniper_status and sniper_status.enabled:
@@ -514,7 +513,7 @@ class ContextBuilder:
                 sniper_parts.append(f"last_reject={sniper_status.last_rejection_reason}")
             capital = sniper_status.capital_in_flight + sniper_status.capital_in_positions
             sniper_parts.append(f"capital=${capital / 100:.2f}")
-            _add("SNIPER", f"SNIPER: {', '.join(sniper_parts)}")
+            cb.add("SNIPER", f"SNIPER: {', '.join(sniper_parts)}")
 
         # MM state (expanded for strategic orchestration)
         if mm_state:
@@ -533,20 +532,15 @@ class ContextBuilder:
             )
             if mm_events:
                 mm_text += f"\n  MM_EVENTS: {', '.join(mm_events)}"
-            _add("MM", mm_text)
+            cb.add("MM", mm_text)
 
         # Task ledger
         if task_section:
-            _add("TASKS", task_section)
+            cb.add("TASKS", task_section)
 
-        if dropped_sections:
-            parts.append(
-                f"\nCONTEXT TRUNCATED: Omitted sections: {dropped_sections} due to token budget. "
-                "Data may be incomplete -- call get_market_state for fresh data if needed."
-            )
-
-        parts.append("ACTION: Search news on active events. Evaluate early bird opportunities. When MM active: get_quote_performance and tune. Manage positions.")
-        return "\n".join(parts)
+        return cb.build(
+            suffix="ACTION: Search news on active events. Evaluate early bird opportunities. When MM active: get_quote_performance and tune. Manage positions."
+        )
 
     def build_deep_scan_context(
         self,
@@ -568,22 +562,7 @@ class ContextBuilder:
         All events summary (compact), full positions, sniper perf, health, memories.
         """
         import json
-        budget = DEEP_SCAN_TOKEN_BUDGET
-        parts = []
-        tokens_used = 0
-        dropped_sections = []
-
-        def _add(section_name: str, text: str) -> bool:
-            """Add section if within budget. Returns True if added."""
-            nonlocal tokens_used
-            cost = _estimate_tokens(text)
-            if tokens_used + cost > budget * 0.9:
-                logger.debug(f"Context truncated: {section_name} omitted, {tokens_used}/{budget} tokens")
-                dropped_sections.append(section_name)
-                return False
-            parts.append(text)
-            tokens_used += cost
-            return True
+        cb = ContextBudget(DEEP_SCAN_TOKEN_BUDGET)
 
         # Compact events summary (high priority)
         events_compact = []
@@ -597,7 +576,7 @@ class ContextBuilder:
                 "mkts": ev.market_count,
                 "ttc": ev.time_to_close_hours,
             })
-        _add("EVENTS", f"EVENTS: {json.dumps(events_compact, separators=(',', ':'))}")
+        cb.add("EVENTS", f"EVENTS: {json.dumps(events_compact, separators=(',', ':'))}")
 
         # Full portfolio (high priority)
         if portfolio.positions:
@@ -613,13 +592,13 @@ class ContextBuilder:
                     f"  {p.ticker} ({p.event_ticker}) {p.side} {p.quantity}ct "
                     f"cost={p.cost_cents}c exit={p.exit_price} pnl={pnl_ct:+d}c/ct"
                 )
-            _add("PORTFOLIO", "\n".join(portfolio_lines))
+            cb.add("PORTFOLIO", "\n".join(portfolio_lines))
         else:
-            _add("PORTFOLIO", f"PORTFOLIO: balance={_fmt_balance(portfolio, self._subaccount)}, no positions")
+            cb.add("PORTFOLIO", f"PORTFOLIO: balance={_fmt_balance(portfolio, self._subaccount)}, no positions")
 
         # Sniper performance
         if sniper_status and sniper_status.enabled:
-            _add("SNIPER_PERF",
+            cb.add("SNIPER_PERF",
                 f"SNIPER_PERF: arbs={sniper_status.total_arbs_executed}, "
                 f"trades={sniper_status.total_trades}, "
                 f"unwinds={sniper_status.total_partial_unwinds}, "
@@ -628,7 +607,7 @@ class ContextBuilder:
 
         # Health
         if health:
-            _add("HEALTH",
+            cb.add("HEALTH",
                 f"HEALTH: drawdown={health.get('drawdown_pct', 0):.1f}%, "
                 f"realized_pnl={health.get('total_realized_pnl_cents', 0)}c, "
                 f"settlements={health.get('settlement_count_session', 0)}"
@@ -642,7 +621,7 @@ class ContextBuilder:
             accuracy = decision_accuracy.get("direction_accuracy_pct", 0)
             avg_pnl = decision_accuracy.get("avg_hypothetical_pnl", 0)
             fill_pct = decision_accuracy.get("would_have_filled_pct", 0)
-            _add("DECISIONS",
+            cb.add("DECISIONS",
                 f"DECISIONS (24h): {total} orders, {correct}/{with_outcomes} direction-correct "
                 f"({accuracy:.0f}%), avg_pnl={avg_pnl:+.1f}c/trade, "
                 f"{fill_pct:.0f}% would-have-filled"
@@ -662,21 +641,21 @@ class ContextBuilder:
                 if opp.get("age_seconds"):
                     opp_parts.append(f"age={opp['age_seconds']:.0f}s")
                 eb_lines.append(" ".join(opp_parts))
-            _add("EARLY_BIRD", "\n".join(eb_lines))
+            cb.add("EARLY_BIRD", "\n".join(eb_lines))
 
         # Trade outcome learnings (lower priority — may be truncated)
         if trade_memories:
             mem_lines = ["TRADE_LEARNINGS:"]
             for mem in trade_memories[:5]:
                 mem_lines.append(f"  - {mem[:120]}")
-            _add("TRADE_LEARNINGS", "\n".join(mem_lines))
+            cb.add("TRADE_LEARNINGS", "\n".join(mem_lines))
 
         # News learnings (signal-quality-boosted recall)
         if news_memories:
             news_lines = ["NEWS_LEARNINGS:"]
             for mem in news_memories[:5]:
                 news_lines.append(f"  - {mem[:120]}")
-            _add("NEWS_LEARNINGS", "\n".join(news_lines))
+            cb.add("NEWS_LEARNINGS", "\n".join(news_lines))
 
         # News-price impact learnings
         if market_movers:
@@ -686,7 +665,7 @@ class ContextBuilder:
                     f"  - \"{m.get('news_title', '?')}\" moved {m.get('market_ticker', '?')} "
                     f"{m.get('change_cents', 0)}c {m.get('direction', '?')}"
                 )
-            _add("NEWS_IMPACT", "\n".join(impact_lines))
+            cb.add("NEWS_IMPACT", "\n".join(impact_lines))
 
         # Swing-news pattern index (known news->price relationships)
         if swing_patterns:
@@ -697,7 +676,7 @@ class ContextBuilder:
                     f"{p.get('change_cents', 0):.0f}c on {p.get('event_ticker', '?')} "
                     f"(confidence={p.get('causal_confidence', 0):.1f})"
                 )
-            _add("NEWS_PATTERNS", "\n".join(pattern_lines))
+            cb.add("NEWS_PATTERNS", "\n".join(pattern_lines))
 
         # MM state (detailed for deep scan)
         if mm_state:
@@ -726,24 +705,17 @@ class ContextBuilder:
                         f"  MM_POS: {mp['ticker']} pos={mp['position']} "
                         f"pnl={mp.get('realized_pnl_cents', 0):.0f}c"
                     )
-            _add("MM", "\n".join(mm_lines))
+            cb.add("MM", "\n".join(mm_lines))
 
         # Task ledger
         if task_section:
-            _add("TASKS", task_section)
+            cb.add("TASKS", task_section)
 
-        if dropped_sections:
-            parts.append(
-                f"\nCONTEXT TRUNCATED: Omitted sections: {dropped_sections} due to token budget. "
-                "Data may be incomplete -- call get_market_state for fresh data if needed."
-            )
-
-        parts.append(
-            "ACTION: Full review. Evaluate all events against news. "
+        return cb.build(
+            suffix="ACTION: Full review. Evaluate all events against news. "
             "Full MM review: get_quote_performance, recall MM memories, search_news on MM events. "
             "Check early bird opportunities. Manage positions."
         )
-        return "\n".join(parts)
 
     def compute_diffs(self, current: MarketState) -> CycleDiff:
         """Compute changes since last cycle. Pure Python."""
