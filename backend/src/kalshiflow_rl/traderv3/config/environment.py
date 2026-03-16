@@ -158,7 +158,7 @@ class V3Config:
     sniper_arb_min_edge: float = 0.5               # V3_SNIPER_ARB_MIN_EDGE - min edge cents for S1_ARB
     sniper_order_ttl: int = 30                     # V3_SNIPER_ORDER_TTL - order TTL in seconds
     sniper_leg_timeout: float = 5.0                # V3_SNIPER_LEG_TIMEOUT - per-leg placement timeout in seconds
-    sniper_vpin_reject_threshold: float = 0.98     # V3_SNIPER_VPIN_REJECT_THRESHOLD - VPIN above this blocks sniper (high for Kalshi thin markets)
+    sniper_vpin_reject_threshold: float = 0.92     # V3_SNIPER_VPIN_REJECT_THRESHOLD - VPIN above this blocks sniper
 
     # Discovery Configuration
     discovery_event_count: int = 10               # V3_DISCOVERY_EVENT_COUNT - top N events by volume (lifecycle bridge adds the rest)
@@ -417,7 +417,7 @@ class V3Config:
         sniper_arb_min_edge = float(os.environ.get("V3_SNIPER_ARB_MIN_EDGE", "0.5"))
         sniper_order_ttl = int(os.environ.get("V3_SNIPER_ORDER_TTL", "30"))
         sniper_leg_timeout = float(os.environ.get("V3_SNIPER_LEG_TIMEOUT", "5.0"))
-        sniper_vpin_reject_threshold = float(os.environ.get("V3_SNIPER_VPIN_REJECT_THRESHOLD", "0.98"))
+        sniper_vpin_reject_threshold = float(os.environ.get("V3_SNIPER_VPIN_REJECT_THRESHOLD", "0.92"))
 
         # Discovery Configuration
         discovery_event_count = int(os.environ.get("V3_DISCOVERY_EVENT_COUNT", "10"))

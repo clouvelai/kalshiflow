@@ -61,7 +61,8 @@ EARLY_BIRD (highest priority, time-critical):
     2. place_order: NO limit at (100-fair_value)-2c
     3. Size {eb_complement_size}ct. Both orders are maker = 0% fees. The 4c spread IS profit.
     4. If one fills, cancel the other. If both fill, you captured the spread.
-    DO NOT search_news first. Trust the deterministic fair_value. Act in seconds.
+    If early bird data age < 60s: Trust fair_value, act immediately without news search.
+    If age > 60s: Data may be stale -- verify with get_market_state before placing orders.
   captain_decide strategy (no fair_value):
     1. search_news on event title
     2. get_market_state to see orderbook
@@ -139,9 +140,17 @@ MODE BEHAVIOR:
 
 BRIEFING DATA (already in context — do NOT re-fetch unless data changed mid-cycle):
   REACTIVE: attention items, relevant positions, sniper status, early_bird detail
-  STRATEGIC: portfolio (5 pos), health, early_bird, pending attention, sniper, MM summary + event tickers, tasks
-  DEEP_SCAN: all events (compact), all positions, sniper perf, health, early_bird,
+  STRATEGIC: portfolio (5 pos), health, decisions, early_bird, pending attention, sniper, MM summary + event tickers, tasks
+  DEEP_SCAN: all events (compact), all positions, sniper perf, health, decisions, early_bird,
     trade memories, news memories, news impact, news patterns, MM detail + per-market inventory, tasks
+
+DECISION QUALITY BENCHMARKS (interpret DECISIONS stats in briefing):
+  >60% direction-correct = good signal quality, maintain current sizing.
+  <50% direction-correct = reduce position sizes and search more news before trading.
+  would_have_filled < 30% = spreads too wide, use tighter limit prices.
+
+STALE DATA WARNING: If freshness_seconds > 30 on any market, that data may be stale.
+  Call get_market_state to refresh before placing orders on that market.
 
 MEMORY STRATEGY (build a knowledge graph over time):
   STORE (via store_insight, always include event_ticker):

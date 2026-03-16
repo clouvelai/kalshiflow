@@ -262,6 +262,9 @@ class SingleArbCoordinator:
 
         await self._broadcast_startup("Captain tools wired", 6, 10)
 
+        # 8a. Reconcile resting orders from previous session
+        await self._reconcile_resting_orders()
+
         # 8b. Create NewsIngestionService + ArticleAnalyzer (optional)
         if self._search_service and self._config.news_ingestion_enabled:
             try:
@@ -480,40 +483,47 @@ class SingleArbCoordinator:
         # 11. Create and start Captain (if enabled AND exchange is active)
         captain_enabled = getattr(self._config, "single_arb_captain_enabled", True)
         if captain_enabled:
-            try:
-                captain_interval = getattr(self._config, "single_arb_captain_interval", 60.0)
-
-                from .captain import ArbCaptain
-                from .context_builder import ContextBuilder
-
-                ctx_builder = ContextBuilder(index=self._index, subaccount=self._config.subaccount)
-                self._captain = ArbCaptain(
-                    context_builder=ctx_builder,
-                    attention_router=self._attention_router,
-                    config=self._config,
-                    cycle_interval=captain_interval,
-                    event_callback=self._emit_agent_event,
-                    sniper_ref=self._sniper,
-                    system_ready=self._system_ready,
+            # Guard: Captain requires attention_router for proper operation
+            if self._attention_router is None:
+                logger.error(
+                    "Cannot start Captain: attention_router unavailable after single-arb failure"
                 )
-                mode = "attention-driven" if self._attention_router else "legacy (fixed-interval)"
-                logger.info(f"[CAPTAIN] Using single-agent Captain, mode={mode}")
+                captain_enabled = False
+            else:
+                try:
+                    captain_interval = getattr(self._config, "single_arb_captain_interval", 60.0)
 
-                if is_exchange_active:
-                    await self._captain.start()
-                    logger.info("ArbCaptain started")
-                else:
-                    # Captain created but paused, waiting for exchange
-                    self._captain._paused = True
-                    self._captain_paused_by_exchange = True
-                    await self._captain.start()  # Start loop but paused
-                    logger.info("ArbCaptain created but paused (waiting for exchange)")
-                    await self._broadcast({
-                        "type": "captain_paused",
-                        "data": {"paused": True, "reason": "exchange_down"},
-                    })
-            except Exception as e:
-                logger.error(f"Failed to start ArbCaptain: {e}")
+                    from .captain import ArbCaptain
+                    from .context_builder import ContextBuilder
+
+                    ctx_builder = ContextBuilder(index=self._index, subaccount=self._config.subaccount)
+                    self._captain = ArbCaptain(
+                        context_builder=ctx_builder,
+                        attention_router=self._attention_router,
+                        config=self._config,
+                        cycle_interval=captain_interval,
+                        event_callback=self._emit_agent_event,
+                        sniper_ref=self._sniper,
+                        system_ready=self._system_ready,
+                    )
+                    mode = "attention-driven" if self._attention_router else "legacy (fixed-interval)"
+                    logger.info(f"[CAPTAIN] Using single-agent Captain, mode={mode}")
+
+                    if is_exchange_active:
+                        await self._captain.start()
+                        logger.info("ArbCaptain started")
+                    else:
+                        # Captain created but paused, waiting for exchange
+                        self._captain._paused = True
+                        self._captain_paused_by_exchange = True
+                        await self._captain.start()  # Start loop but paused
+                        logger.info("ArbCaptain created but paused (waiting for exchange)")
+                        await self._broadcast({
+                            "type": "captain_paused",
+                            "data": {"paused": True, "reason": "exchange_down"},
+                        })
+                except Exception as e:
+                    logger.error(f"Failed to start ArbCaptain: {e}")
 
         await self._broadcast_startup("Captain started", 9, 10)
 
@@ -1817,6 +1827,59 @@ class SingleArbCoordinator:
         )
         set_context(ctx)
         logger.info("[TOOLS] ToolContext wired (12 tools, single agent)")
+
+    async def _reconcile_resting_orders(self) -> None:
+        """Reconcile resting orders from a previous session on restart.
+
+        After tool setup, queries the exchange for any resting orders whose
+        ticker is in the index and registers them into the order tracking
+        system so the order tracker loop picks them up.
+        """
+        from .tools import get_context
+
+        ctx = get_context()
+        if not ctx:
+            logger.debug("[RECONCILE] No ToolContext available, skipping order reconciliation")
+            return
+
+        try:
+            resting_orders = await self._gateway.get_orders(status="resting")
+        except Exception as e:
+            logger.warning(f"[RECONCILE] Failed to fetch resting orders: {e}")
+            return
+
+        if not resting_orders:
+            logger.info("Reconciled 0 resting orders from previous session")
+            return
+
+        count = 0
+        for order in resting_orders:
+            ticker = order.ticker
+            order_id = order.order_id
+            if not order_id or not ticker:
+                continue
+
+            # Only reconcile orders for markets we're tracking
+            if not self._index.get_event_for_ticker(ticker):
+                continue
+
+            ctx.captain_order_ids.add(order_id)
+            if self._trading_session:
+                self._trading_session.captain_order_ids.add(order_id)
+            ctx.order_initial_states[order_id] = {
+                "ticker": ticker,
+                "side": order.side,
+                "action": order.action,
+                "contracts": order.count or 0,
+                "price_cents": order.yes_price or order.price or 0,
+                "placed_at": time.time(),
+                "ttl_seconds": 0,  # No TTL for reconciled orders
+                "status": "resting",
+                "source": "reconciled",
+            }
+            count += 1
+
+        logger.info(f"Reconciled {count} resting orders from previous session")
 
     # ------------------------------------------------------------------ #
     #  QuoteEngine setup (MM folded into Captain)                         #

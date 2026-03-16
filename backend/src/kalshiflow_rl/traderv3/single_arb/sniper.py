@@ -604,7 +604,32 @@ class Sniper:
                 f"[SNIPER:S1_ARB] PARTIAL {opportunity.event_ticker} {opportunity.direction} "
                 f"legs={filled}/{len(opportunity.legs)} — UNWINDING successful legs"
             )
+
+            # Track capital for all filled legs BEFORE unwinding.
+            # total_cost is the sum of cost for all successfully placed legs.
+            self.state.capital_active += total_cost
+            self.state.capital_deployed_lifetime += total_cost
+
             cancelled = await self._unwind_legs(successful_order_ids, opportunity, action)
+
+            # Release capital for legs that were successfully cancelled.
+            # Legs that failed to cancel (already filled) stay counted in capital_active
+            # because they represent real positions on the exchange.
+            capital_released = 0
+            for oid in successful_order_ids:
+                if oid not in self.state.active_order_ids:
+                    # Order was removed from active tracking by _cancel_leg_safe
+                    # (either cancelled successfully or confirmed terminal via 404)
+                    cost = self.state.order_costs.pop(oid, 0)
+                    capital_released += cost
+            self.state.capital_active -= capital_released
+
+            logger.info(
+                f"[SNIPER:S1_ARB] Partial unwind capital: "
+                f"total_cost={total_cost}c, released={capital_released}c, "
+                f"retained={total_cost - capital_released}c (unhedged positions)"
+            )
+
             action.unwound = True
             action.error = f"partial_fill_unwound (cancelled={cancelled}/{filled})"
             action.error_type = "partial_unwind"

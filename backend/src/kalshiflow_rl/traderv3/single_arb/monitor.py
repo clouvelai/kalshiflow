@@ -51,6 +51,10 @@ class EventArbMonitor:
         self._poller_task: Optional[asyncio.Task] = None
         self._stats_task: Optional[asyncio.Task] = None
 
+        # REST poller rate limiting: exponential backoff on consecutive errors
+        self._poll_consecutive_errors: int = 0
+        self._poll_backoff_seconds: float = 0.0
+
         # Feed counters
         self._update_count = 0
         self._poll_count = 0
@@ -315,7 +319,17 @@ class EventArbMonitor:
         return fetched
 
     async def _poll_stale_markets(self) -> None:
-        """Poll orderbooks for markets with stale WS data (depth=5)."""
+        """Poll orderbooks for markets with stale WS data (depth=5).
+
+        Rate-limited: processes max 8 tickers per batch with 0.5s pause
+        between batches. Uses exponential backoff on consecutive API errors
+        (starts 1s, max 30s, resets on success).
+        """
+        # Apply backoff delay if we've had consecutive errors
+        if self._poll_backoff_seconds > 0:
+            logger.debug(f"REST poller backoff: sleeping {self._poll_backoff_seconds:.1f}s")
+            await asyncio.sleep(self._poll_backoff_seconds)
+
         now = time.time()
         stale_tickers = []
 
@@ -330,8 +344,14 @@ class EventArbMonitor:
         logger.debug(f"Polling {len(stale_tickers)} stale markets via REST (depth=5)")
 
         events_to_broadcast = set()
+        batch_size = 8
+        had_error_this_cycle = False
 
-        for ticker in stale_tickers:
+        for i, ticker in enumerate(stale_tickers):
+            # Pause between batches (every 8 tickers) to respect rate limits
+            if i > 0 and i % batch_size == 0:
+                await asyncio.sleep(0.5)
+
             try:
                 resp = await self._trading_client.get_orderbook(ticker, depth=5)
                 if not resp:
@@ -354,6 +374,10 @@ class EventArbMonitor:
                 self._poll_count += 1
                 self._last_poll_at = time.time()
 
+                # Reset backoff on success
+                self._poll_consecutive_errors = 0
+                self._poll_backoff_seconds = 0.0
+
                 event_ticker = self._index.get_event_for_ticker(ticker)
                 if event_ticker:
                     events_to_broadcast.add(event_ticker)
@@ -363,6 +387,16 @@ class EventArbMonitor:
 
             except Exception as e:
                 logger.debug(f"REST poll failed for {ticker}: {e}")
+                had_error_this_cycle = True
+
+        # Apply exponential backoff if all requests in this cycle had errors
+        if had_error_this_cycle and not events_to_broadcast:
+            self._poll_consecutive_errors += 1
+            self._poll_backoff_seconds = min(30.0, 1.0 * (2 ** (self._poll_consecutive_errors - 1)))
+            logger.warning(
+                f"REST poller: {self._poll_consecutive_errors} consecutive error cycles, "
+                f"backoff={self._poll_backoff_seconds:.1f}s"
+            )
 
         # Broadcast updates for all affected events
         for event_ticker in events_to_broadcast:

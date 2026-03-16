@@ -181,7 +181,7 @@ async def _get_cached_positions(event_ticker: Optional[str] = None, ttl: float =
 
 
 async def _fetch_balance_with_budget_check(label: str) -> tuple:
-    """Fetch balance and warn if cycle capital spend exceeds 30%.
+    """Fetch balance and check if cycle capital spend exceeds 30%.
 
     Returns (balance_cents, balance_dollars) or (None, None) on failure.
     """
@@ -198,6 +198,30 @@ async def _fetch_balance_with_budget_check(label: str) -> tuple:
     except Exception as e:
         logger.warning(f"[TOOLS:{label}] Balance fetch failed: {e}")
         return None, None
+
+
+async def _check_budget_gate() -> Optional[str]:
+    """Pre-order budget gate: reject if cycle capital spend exceeds 30% of balance.
+
+    Returns an error string if budget is exceeded, or None if within budget.
+    """
+    try:
+        bal = await _ctx.gateway.get_balance()
+        balance_cents = bal.balance
+        if not balance_cents:
+            return None
+        limit_cents = int(balance_cents * 0.3)
+        if _ctx.cycle_capital_spent_cents > limit_cents:
+            remaining = max(0, limit_cents - _ctx.cycle_capital_spent_cents)
+            return (
+                f"Budget limit reached: spent {_ctx.cycle_capital_spent_cents} cents this cycle, "
+                f"limit is {limit_cents} cents (30% of {balance_cents} balance). "
+                f"Remaining budget: {remaining} cents."
+            )
+        return None
+    except Exception as e:
+        logger.warning(f"[TOOLS:BUDGET_GATE] Balance fetch failed: {e}")
+        return None
 
 
 # --- Tool 1: get_market_state ---
@@ -280,11 +304,18 @@ async def place_order(
     gw = _ctx.gateway
     session = _ctx.session
 
-    # Position conflict guard (block buying opposite side on same market)
-    if action == "buy":
-        try:
-            event_for_ticker = _ctx.index.get_event_for_ticker(ticker) if _ctx.index else None
-            raw_positions = await _get_cached_positions(event_ticker=event_for_ticker)
+    # Per-cycle budget gate: reject if cycle capital spend exceeds 30% of balance
+    budget_error = await _check_budget_gate()
+    if budget_error:
+        return {"error": budget_error}
+
+    # Position conflict guard
+    try:
+        event_for_ticker = _ctx.index.get_event_for_ticker(ticker) if _ctx.index else None
+        raw_positions = await _get_cached_positions(event_ticker=event_for_ticker)
+
+        if action == "buy":
+            # Block buying opposite side on same market
             for pos in raw_positions:
                 pos_ticker = pos.ticker if hasattr(pos, "ticker") else pos.get("ticker")
                 pos_count = pos.position if hasattr(pos, "position") else pos.get("position", 0)
@@ -297,9 +328,28 @@ async def place_order(
                         f"Exit first with place_order(action='sell', side='{existing_side}', ...). "
                         f"Buying {side.upper()} while holding {existing_side.upper()} locks in losses.",
                     }
-        except Exception as e:
-            logger.warning(f"[TOOLS:TRADE] Position conflict check failed (blocking order): {e}")
-            return {"error": f"Position conflict check failed: {e}. Cannot verify positions — order blocked for safety."}
+
+        elif action == "sell":
+            # Block selling a side we don't hold
+            held = False
+            for pos in raw_positions:
+                pos_ticker = pos.ticker if hasattr(pos, "ticker") else pos.get("ticker")
+                pos_count = pos.position if hasattr(pos, "position") else pos.get("position", 0)
+                if pos_ticker != ticker or pos_count == 0:
+                    continue
+                existing_side = "yes" if pos_count > 0 else "no"
+                if existing_side == side:
+                    held = True
+                    break
+            if not held:
+                return {
+                    "error": f"Cannot sell {side.upper()}: no position held on {ticker}. "
+                    f"Check portfolio before selling.",
+                }
+
+    except Exception as e:
+        logger.warning(f"[TOOLS:TRADE] Position conflict check failed (blocking order): {e}")
+        return {"error": f"Position conflict check failed: {e}. Cannot verify positions — order blocked for safety."}
 
     # Edge gate: reject buy orders with no edge (sell/exit orders bypass)
     if action == "buy" and _ctx.index:
@@ -480,6 +530,12 @@ async def execute_arb(
         return {"error": f"Invalid direction: {direction}. Must be 'long' or 'short'."}
     if not event_state.mutually_exclusive and direction == "short":
         return {"error": f"INDEPENDENT EVENT: {event_ticker} has mutually_exclusive=False. Short arb is not risk-free."}
+
+    # Per-cycle budget gate: reject if cycle capital spend exceeds 30% of balance
+    if not dry_run:
+        budget_error = await _check_budget_gate()
+        if budget_error:
+            return {"error": budget_error}
 
     # Check balance (with retry)
     try:

@@ -312,6 +312,7 @@ class ContextBuilder:
         budget = REACTIVE_TOKEN_BUDGET
         parts = []
         tokens_used = 0
+        dropped_sections = []
 
         def _add(section_name: str, text: str) -> bool:
             """Add section if within budget. Returns True if added."""
@@ -319,6 +320,7 @@ class ContextBuilder:
             cost = _estimate_tokens(text)
             if tokens_used + cost > budget * 0.9:
                 logger.debug(f"Context truncated: {section_name} omitted, {tokens_used}/{budget} tokens")
+                dropped_sections.append(section_name)
                 return False
             parts.append(text)
             tokens_used += cost
@@ -393,6 +395,12 @@ class ContextBuilder:
                 eb_lines.append(" ".join(detail_parts))
             _add("EARLY_BIRD_DETAIL", "\n".join(eb_lines))
 
+        if dropped_sections:
+            parts.append(
+                f"\nCONTEXT TRUNCATED: Omitted sections: {dropped_sections} due to token budget. "
+                "Data may be incomplete -- call get_market_state for fresh data if needed."
+            )
+
         parts.append(
             "ACTION: Respond to attention items above ONLY. Trade, exit, or note why you pass. "
             "Do NOT plan strategy, research unrelated events, or call write_todos in reactive mode."
@@ -418,6 +426,7 @@ class ContextBuilder:
         budget = STRATEGIC_TOKEN_BUDGET
         parts = []
         tokens_used = 0
+        dropped_sections = []
 
         def _add(section_name: str, text: str) -> bool:
             """Add section if within budget. Returns True if added."""
@@ -425,6 +434,7 @@ class ContextBuilder:
             cost = _estimate_tokens(text)
             if tokens_used + cost > budget * 0.9:
                 logger.debug(f"Context truncated: {section_name} omitted, {tokens_used}/{budget} tokens")
+                dropped_sections.append(section_name)
                 return False
             parts.append(text)
             tokens_used += cost
@@ -529,6 +539,12 @@ class ContextBuilder:
         if task_section:
             _add("TASKS", task_section)
 
+        if dropped_sections:
+            parts.append(
+                f"\nCONTEXT TRUNCATED: Omitted sections: {dropped_sections} due to token budget. "
+                "Data may be incomplete -- call get_market_state for fresh data if needed."
+            )
+
         parts.append("ACTION: Search news on active events. Evaluate early bird opportunities. When MM active: get_quote_performance and tune. Manage positions.")
         return "\n".join(parts)
 
@@ -555,6 +571,7 @@ class ContextBuilder:
         budget = DEEP_SCAN_TOKEN_BUDGET
         parts = []
         tokens_used = 0
+        dropped_sections = []
 
         def _add(section_name: str, text: str) -> bool:
             """Add section if within budget. Returns True if added."""
@@ -562,6 +579,7 @@ class ContextBuilder:
             cost = _estimate_tokens(text)
             if tokens_used + cost > budget * 0.9:
                 logger.debug(f"Context truncated: {section_name} omitted, {tokens_used}/{budget} tokens")
+                dropped_sections.append(section_name)
                 return False
             parts.append(text)
             tokens_used += cost
@@ -713,6 +731,12 @@ class ContextBuilder:
         # Task ledger
         if task_section:
             _add("TASKS", task_section)
+
+        if dropped_sections:
+            parts.append(
+                f"\nCONTEXT TRUNCATED: Omitted sections: {dropped_sections} due to token budget. "
+                "Data may be incomplete -- call get_market_state for fresh data if needed."
+            )
 
         parts.append(
             "ACTION: Full review. Evaluate all events against news. "

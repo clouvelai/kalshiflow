@@ -24,15 +24,30 @@ from kalshiflow_rl.traderv3.single_arb.models import AttentionItem
 # Helpers
 # ===========================================================================
 
+def _mock_order_response(order_id="auto-order-001"):
+    """Create a mock OrderResponse matching gateway.create_order() return type."""
+    resp = MagicMock()
+    resp.order.order_id = order_id
+    resp.order.status = "resting"
+    return resp
+
+
+def _mock_position(ticker="EVT-1-MKT-A", position=10):
+    """Create a mock Position matching gateway.get_positions() return type."""
+    pos = MagicMock()
+    pos.ticker = ticker
+    pos.position = position
+    return pos
+
+
 def make_manager(events=None, sniper=None):
     """Create an AutoActionManager with mock gateway and pre-populated index."""
     if events is None:
         events = [make_event_meta("EVT-1", n_markets=3)]
     index = make_index(events=events)
     gateway = AsyncMock()
-    gateway.place_order = AsyncMock(return_value={
-        "order": {"order_id": "auto-order-001", "status": "resting"}
-    })
+    gateway.create_order = AsyncMock(return_value=_mock_order_response())
+    gateway.get_positions = AsyncMock(return_value=[_mock_position()])
     return AutoActionManager(
         gateway=gateway,
         index=index,
@@ -153,8 +168,8 @@ class TestStopLoss:
         mgr = make_manager()
         item = make_position_risk_item(pnl_per_ct=-15)
         await mgr.on_attention_item(item)
-        mgr._gateway.place_order.assert_called_once()
-        call_kwargs = mgr._gateway.place_order.call_args[1]
+        mgr._gateway.create_order.assert_called_once()
+        call_kwargs = mgr._gateway.create_order.call_args[1]
         assert call_kwargs["ticker"] == "EVT-1-MKT-A"
         assert call_kwargs["action"] == "sell"
 
@@ -348,16 +363,59 @@ class TestAutoActionLogging:
 
 
 # ===========================================================================
+# TestPositionAlreadyClosed
+# ===========================================================================
+
+class TestPositionAlreadyClosed:
+    @pytest.mark.asyncio
+    async def test_position_already_closed_skips_exit(self):
+        """Exit should not fire if the position no longer exists (race with Captain)."""
+        mgr = make_manager()
+        # Gateway returns no matching position (Captain already exited)
+        mgr._gateway.get_positions.return_value = []
+
+        item = make_position_risk_item(pnl_per_ct=-15)
+        await mgr.on_attention_item(item)
+        # Should not attempt to place an order
+        mgr._gateway.create_order.assert_not_called()
+        # auto_handled should NOT be set since no action was taken
+        assert "auto_handled" not in item.data
+
+    @pytest.mark.asyncio
+    async def test_position_zero_quantity_skips_exit(self):
+        """Exit should not fire if position exists but has zero contracts."""
+        mgr = make_manager()
+        mgr._gateway.get_positions.return_value = [_mock_position(ticker="EVT-1-MKT-A", position=0)]
+
+        item = make_position_risk_item(pnl_per_ct=-15)
+        await mgr.on_attention_item(item)
+        mgr._gateway.create_order.assert_not_called()
+        assert "auto_handled" not in item.data
+
+    @pytest.mark.asyncio
+    async def test_position_exists_proceeds_with_exit(self):
+        """Exit should proceed normally when position still exists."""
+        mgr = make_manager()
+        # Ensure position exists
+        mgr._gateway.get_positions.return_value = [_mock_position(ticker="EVT-1-MKT-A", position=10)]
+
+        item = make_position_risk_item(pnl_per_ct=-15)
+        await mgr.on_attention_item(item)
+        mgr._gateway.create_order.assert_called_once()
+        assert item.data.get("auto_handled")
+
+
+# ===========================================================================
 # TestOrderIdValidation
 # ===========================================================================
 
 class TestOrderIdValidation:
     @pytest.mark.asyncio
     async def test_empty_order_id_returns_error(self):
-        """Exit should return error when place_order returns no order_id."""
+        """Exit should return error when create_order returns no order_id."""
         mgr = make_manager()
         # Override gateway to return empty order_id
-        mgr._gateway.place_order.return_value = {"order": {"order_id": "", "status": "unknown"}}
+        mgr._gateway.create_order.return_value = _mock_order_response(order_id="")
 
         item = make_position_risk_item(pnl_per_ct=-15)
         await mgr.on_attention_item(item)
@@ -366,9 +424,9 @@ class TestOrderIdValidation:
 
     @pytest.mark.asyncio
     async def test_missing_order_key_returns_error(self):
-        """Exit should return error when place_order returns malformed response."""
+        """Exit should return error when create_order raises an exception."""
         mgr = make_manager()
-        mgr._gateway.place_order.return_value = {"status": "error"}
+        mgr._gateway.create_order.side_effect = Exception("API error")
 
         item = make_position_risk_item(pnl_per_ct=-15)
         await mgr.on_attention_item(item)
@@ -421,10 +479,9 @@ class TestRegimeGatePausesSniper:
                 pnl_per_ct=-15,
                 ticker=f"MKT-{i}",
             )
-            # Reset the mock for each call
-            mgr._gateway.place_order.reset_mock()
-            mgr._gateway.place_order.return_value = {
-                "order": {"order_id": f"order-{i}", "status": "resting"}
-            }
+            # Reset the mock for each call and return matching position
+            mgr._gateway.create_order.reset_mock()
+            mgr._gateway.create_order.return_value = _mock_order_response(order_id=f"order-{i}")
+            mgr._gateway.get_positions.return_value = [_mock_position(ticker=f"MKT-{i}")]
             await mgr.on_attention_item(item)
         assert len(mgr._action_log) <= 50
