@@ -113,18 +113,37 @@ class TradeMessage(BaseModel):
     msg: Dict[str, Any] = Field(..., description="Raw message data from Kalshi")
     
     def to_trade(self) -> Trade:
-        """Convert raw Kalshi message to Trade object."""
+        """Convert raw Kalshi message to Trade object.
+
+        Handles both old format (yes_price/no_price as int cents, count as int)
+        and new format (yes_price_dollars/no_price_dollars as string dollars, count_fp as string).
+        """
         # Convert timestamp from seconds to milliseconds for consistent internal processing
         raw_timestamp = self.msg["ts"]
         timestamp_ms = raw_timestamp * 1000 if raw_timestamp < 2000000000 else raw_timestamp
-        
+
+        # New Kalshi format: yes_price_dollars/no_price_dollars as strings, count_fp as string
+        if "yes_price_dollars" in self.msg:
+            yes_dollars = float(self.msg["yes_price_dollars"])
+            no_dollars = float(self.msg["no_price_dollars"])
+            yes_cents = round(yes_dollars * 100)
+            no_cents = round(no_dollars * 100)
+            count = int(float(self.msg.get("count_fp", self.msg.get("count", 1))))
+        else:
+            # Legacy format: yes_price/no_price as int cents
+            yes_cents = self.msg["yes_price"]
+            no_cents = self.msg["no_price"]
+            yes_dollars = yes_cents / 100.0
+            no_dollars = no_cents / 100.0
+            count = self.msg["count"]
+
         return Trade(
             market_ticker=self.msg["market_ticker"],
-            yes_price=self.msg["yes_price"],
-            no_price=self.msg["no_price"],
-            yes_price_dollars=self.msg["yes_price"] / 100.0,
-            no_price_dollars=self.msg["no_price"] / 100.0,
-            count=self.msg["count"],
+            yes_price=yes_cents,
+            no_price=no_cents,
+            yes_price_dollars=yes_dollars,
+            no_price_dollars=no_dollars,
+            count=count,
             taker_side=self.msg["taker_side"],
             ts=timestamp_ms
         )
