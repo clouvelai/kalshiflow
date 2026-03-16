@@ -206,14 +206,31 @@ class Database:
                 else:
                     logger.warning(f"Migration file not found: {migration_path}")
     
+    async def _recover_pool(self):
+        """Close dead pool and mark for re-initialization on next use."""
+        async with self._init_lock:
+            try:
+                if self._pool:
+                    await asyncio.wait_for(self._pool.close(), timeout=5.0)
+            except Exception:
+                pass
+            self._pool = None
+            self._initialized = False
+        logger.info("Pool recovery: cleared dead pool, will re-initialize on next use")
+
     @asynccontextmanager
     async def get_connection(self):
-        """Get a database connection from the pool."""
+        """Get a database connection from the pool, with auto-recovery on failure."""
         if not self._initialized:
             await self.initialize()
-        
-        async with self._pool.acquire() as conn:
-            yield conn
+
+        try:
+            async with self._pool.acquire() as conn:
+                yield conn
+        except (asyncpg.InterfaceError, OSError) as e:
+            logger.warning(f"Pool connection failed ({e}), attempting recovery...")
+            await self._recover_pool()
+            raise
     
     async def insert_trade(self, trade: Trade) -> int:
         """Insert a trade record and return the row ID."""

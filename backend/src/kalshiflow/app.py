@@ -50,12 +50,29 @@ def custom_json_response(data, status_code=200):
 
 
 async def health_check(request):
-    """Health check endpoint to verify the server is running"""
-    return JSONResponse({
-        "status": "healthy",
-        "service": "kalshiflow-backend",
-        "version": "0.1.0"
-    })
+    """Health check endpoint — returns 503 if database is unreachable."""
+    db_ok = False
+    try:
+        database = get_database()
+        async with database.get_connection() as conn:
+            await asyncio.wait_for(conn.fetchval('SELECT 1'), timeout=3.0)
+        db_ok = True
+    except Exception:
+        pass
+
+    if db_ok:
+        return JSONResponse({
+            "status": "healthy",
+            "service": "kalshiflow-backend",
+            "version": "0.1.0",
+            "database": "connected"
+        })
+    else:
+        return JSONResponse({
+            "status": "unhealthy",
+            "service": "kalshiflow-backend",
+            "database": "unreachable"
+        }, status_code=503)
 
 async def health_ready(request):
     """Health check endpoint indicating if the server is ready to serve requests"""
