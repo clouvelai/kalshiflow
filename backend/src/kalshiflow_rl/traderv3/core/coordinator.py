@@ -845,14 +845,41 @@ class V3Coordinator:
             if self._trading_state_syncer:
                 asyncio.create_task(self._trading_state_syncer.sync_now())
 
+            # Route fill to SingleArbCoordinator for MM handling (if MM integrated)
+            if self._single_arb_coordinator and hasattr(self._single_arb_coordinator, '_on_mm_fill'):
+                try:
+                    await self._single_arb_coordinator._on_mm_fill(
+                        market_ticker=ticker,
+                        side=event.side,
+                        action=event.action,
+                        price_cents=price_cents,
+                        count=count,
+                        order_id=event.order_id or "",
+                    )
+                except Exception as mm_err:
+                    logger.debug(f"MM fill routing error: {mm_err}")
+
         except Exception as e:
             logger.error(f"Error handling order fill event: {e}")
 
     async def _sync_trading_state(self) -> None:
-        """Perform initial trading state sync."""
+        """Perform initial trading state sync with retry on transient failures."""
         logger.info("Syncing with Kalshi...")
 
-        state, changes = await self._trading_client_integration.sync_with_kalshi()
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
+                state, changes = await self._trading_client_integration.sync_with_kalshi()
+                break
+            except Exception as e:
+                err_str = str(e).lower()
+                if "503" in err_str or "service_unavailable" in err_str:
+                    if attempt < max_retries - 1:
+                        delay = (2 ** attempt) * 2
+                        logger.warning(f"Kalshi sync attempt {attempt + 1}/{max_retries} failed (503), retrying in {delay}s...")
+                        await asyncio.sleep(delay)
+                        continue
+                raise
         state_changed = await self._state_container.update_trading_state(state, changes)
         self._state_container.initialize_session_pnl(state.balance, state.portfolio_value)
 
@@ -953,6 +980,8 @@ class V3Coordinator:
 
         if self._config.single_arb_enabled:
             await self._start_single_arb_system()
+
+        # MM is handled by SingleArbCoordinator._setup_quote_engine() when mm_enabled=True
 
         # Start EarlyBirdService (after single_arb so AttentionRouter is available)
         if self._config.early_bird_enabled and self._tracked_events_state and self._tracked_markets_state:

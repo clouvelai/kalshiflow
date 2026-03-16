@@ -1,19 +1,22 @@
 import React, { memo, useMemo } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { BarChart3, Brain, Layers, Clock } from 'lucide-react';
+import { BarChart3, Brain, Layers, Clock, TrendingUp } from 'lucide-react';
 import DashboardOverview from './DashboardOverview';
 import EventView from './EventView';
 import AgentPanel from './AgentPanel';
 import StartupProgress from './StartupProgress';
 import DiscoveryPanel from '../panels/discovery/DiscoveryPanel';
 import LifecycleTimelinePanel from '../panels/lifecycle/LifecycleTimelinePanel';
+import MMPanel from '../panels/mm/MMPanel';
 
-const MAIN_TABS = [
+const BASE_TABS = [
   { id: 'event', label: 'Event', icon: BarChart3 },
   { id: 'agent', label: 'Agent', icon: Brain },
   { id: 'discovery', label: 'Discovery', icon: Layers },
   { id: 'lifecycle', label: 'Lifecycle', icon: Clock },
 ];
+
+const MM_TAB = { id: 'mm', label: 'Market Maker', icon: TrendingUp };
 
 const CenterContent = memo(({
   selectedEventTicker, events, eventTrades, arbTrades,
@@ -31,6 +34,8 @@ const CenterContent = memo(({
   lifecycleTimeline, trackedEvents,
   // Startup props
   connectionStatus, systemState, startupMessages,
+  // Market Maker props
+  mmSnapshot, mmQuoteState, mmInventory, mmTradeLog, mmPerformance,
 }) => {
   const event = useMemo(() => {
     if (!selectedEventTicker || !events) return null;
@@ -46,9 +51,16 @@ const CenterContent = memo(({
   const isStartingUp = (systemState === 'initializing' || systemState === 'startup' || events.size === 0)
     && connectionStatus === 'connected';
 
+  const mmActive = mmSnapshot && Object.keys(mmSnapshot.events || {}).length > 0;
+  const MAIN_TABS = useMemo(() => {
+    return mmActive ? [...BASE_TABS, MM_TAB] : BASE_TABS;
+  }, [mmActive]);
+
   const discoveryCount = discoveryState?.events?.length || 0;
   const lifecycleCount = lifecycleTimeline?.length || 0;
   const earlyBirdCount = (attentionItems || []).filter(i => i.category === 'early_bird').length;
+  const mmQuoteCount = mmQuoteState?.active_quotes || 0;
+  const mmIsPulled = mmQuoteState?.quotes_pulled;
 
   return (
     <div className="flex-1 min-w-0 flex flex-col overflow-hidden bg-gray-950/30">
@@ -94,6 +106,18 @@ const CenterContent = memo(({
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-lime-400 opacity-75" />
                   <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-lime-500" />
                 </span>
+              )}
+              {/* MM tab: quote count or pulled status */}
+              {tab.id === 'mm' && !isActive && (
+                mmIsPulled ? (
+                  <span className="text-[8px] font-mono text-red-400/60 ml-0.5">PULL</span>
+                ) : mmQuoteCount > 0 ? (
+                  <span className="text-[8px] font-mono text-fuchsia-400/60 ml-0.5 tabular-nums">{mmQuoteCount}</span>
+                ) : null
+              )}
+              {/* Pulsing dot on MM tab when quotes are actively running */}
+              {tab.id === 'mm' && !mmIsPulled && mmQuoteCount > 0 && !isActive && (
+                <span className="w-1.5 h-1.5 rounded-full bg-fuchsia-400/60 ml-0.5" />
               )}
             </button>
           );
@@ -159,6 +183,23 @@ const CenterContent = memo(({
               timeline={lifecycleTimeline}
               trackedEvents={trackedEvents}
               attentionItems={attentionItems}
+            />
+          </motion.div>
+        ) : activeMainTab === 'mm' ? (
+          <motion.div
+            key="mm"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.12 }}
+            className="flex-1 min-h-0 flex flex-col"
+          >
+            <MMPanel
+              mmSnapshot={mmSnapshot}
+              mmQuoteState={mmQuoteState}
+              mmInventory={mmInventory}
+              mmTradeLog={mmTradeLog}
+              mmPerformance={mmPerformance}
             />
           </motion.div>
         ) : isStartingUp && !event ? (

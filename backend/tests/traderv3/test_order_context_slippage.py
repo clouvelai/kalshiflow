@@ -7,11 +7,6 @@ This measures execution quality (order-to-fill), not signal-to-fill.
 
 import pytest
 import time
-import sys
-from pathlib import Path
-
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 
 class TestSlippageCalculation:

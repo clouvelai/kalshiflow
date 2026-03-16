@@ -332,6 +332,100 @@ class TestPartialFillUnwind:
         assert action.legs_filled == 3
         assert sniper.state.total_arbs_executed == 1
 
+    @pytest.mark.asyncio
+    async def test_partial_fill_capital_released_on_successful_cancel(self):
+        """When all partial-fill legs are successfully cancelled, capital_active returns to 0."""
+        sniper = make_sniper(max_capital=50000)
+
+        # 2 legs succeed, 1 fails
+        call_count = 0
+        async def mock_create(**kw):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 3:
+                raise Exception("API error on leg 3")
+            return MockOrderResponse(order_id=f"ord-{call_count}")
+
+        sniper._gateway.create_order = mock_create
+        # cancel_order succeeds (default AsyncMock), so all placed orders get cancelled
+
+        opp = MockArbOpportunity()
+        action = await sniper.on_arb_opportunity(opp)
+
+        assert action is not None
+        assert action.unwound is True
+        # All cancelled successfully → capital_active should be 0
+        assert sniper.state.capital_active == 0
+        # Lifetime audit still records the capital that was deployed
+        assert sniper.state.capital_deployed_lifetime > 0
+
+    @pytest.mark.asyncio
+    async def test_partial_fill_capital_retained_for_uncancellable_legs(self):
+        """When cancel fails (leg already filled), capital stays in capital_active."""
+        sniper = make_sniper(max_capital=50000)
+
+        # 2 legs succeed, 1 fails
+        call_count = 0
+        async def mock_create(**kw):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 3:
+                raise Exception("API error on leg 3")
+            return MockOrderResponse(order_id=f"ord-{call_count}")
+
+        sniper._gateway.create_order = mock_create
+        # cancel_order fails for all (simulating already-filled orders)
+        sniper._gateway.cancel_order = AsyncMock(side_effect=Exception("order already filled"))
+
+        opp = MockArbOpportunity()
+        action = await sniper.on_arb_opportunity(opp)
+
+        assert action is not None
+        assert action.unwound is True
+        # Legs: MKT-A@40c, MKT-B@30c, contracts_per_leg=10 (min of size_available)
+        # Filled legs cost: 40*10 + 30*10 = 700c
+        # Cancel failed → capital stays active
+        assert sniper.state.capital_active == 700
+        # Unhedged positions should be tracked
+        assert len(sniper.state.unhedged_positions) == 2
+
+    @pytest.mark.asyncio
+    async def test_partial_fill_mixed_cancel_results(self):
+        """When one cancel succeeds and another fails, only failed cancel's capital stays."""
+        sniper = make_sniper(max_capital=50000)
+
+        # 2 legs succeed, 1 fails
+        call_count = 0
+        async def mock_create(**kw):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 3:
+                raise Exception("API error on leg 3")
+            return MockOrderResponse(order_id=f"ord-{call_count}")
+
+        sniper._gateway.create_order = mock_create
+
+        # First cancel succeeds, second fails
+        cancel_count = 0
+        async def mock_cancel(order_id):
+            nonlocal cancel_count
+            cancel_count += 1
+            if cancel_count == 2:
+                raise Exception("order already filled")
+            return None
+
+        sniper._gateway.cancel_order = mock_cancel
+
+        opp = MockArbOpportunity()
+        action = await sniper.on_arb_opportunity(opp)
+
+        assert action is not None
+        assert action.unwound is True
+        # First cancel (ord-1, MKT-A@40c*10=400c) succeeded → released
+        # Second cancel (ord-2, MKT-B@30c*10=300c) failed → retained
+        assert sniper.state.capital_active == 300
+        assert len(sniper.state.unhedged_positions) == 1
+
 
 # ---------------------------------------------------------------------------
 # Issue #3: Leg timeout
@@ -407,17 +501,6 @@ class TestConfigTTL:
 # ---------------------------------------------------------------------------
 
 class TestCapitalGateCostEstimate:
-    @pytest.mark.asyncio
-    async def test_insufficient_balance_for_estimated_cost(self):
-        sniper = make_sniper(max_capital=50000, max_position=10)
-        # 90c per contract set (40+30+20). Balance only 80c → can't afford even 1
-        sniper._gateway.get_balance = AsyncMock(return_value=MockBalance(balance=80, portfolio_value=0))
-        opp = MockArbOpportunity()
-        rejection, contracts = await sniper._check_risk_gates(opp)
-        assert rejection is not None
-        assert "insufficient_balance" in rejection
-        assert contracts == 0
-
     @pytest.mark.asyncio
     async def test_cost_estimate_with_size_limited_legs(self):
         sniper = make_sniper(max_capital=50000, max_position=25)

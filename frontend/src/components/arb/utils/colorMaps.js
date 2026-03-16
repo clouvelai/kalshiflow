@@ -23,6 +23,7 @@ export const getToolCategory = (toolName) => {
   if (['get_events_summary', 'get_market_state', 'search_news', 'get_market_movers'].includes(toolName)) return 'surveillance';
   if (['get_market_orderbook', 'get_recent_trades'].includes(toolName)) return 'market';
   if (['configure_sniper', 'configure_automation'].includes(toolName)) return 'sniper';
+  if (['configure_quotes', 'pull_quotes', 'resume_quotes', 'get_quote_performance'].includes(toolName)) return 'mm';
   if (['get_account_health'].includes(toolName)) return 'system';
   if (['get_early_bird_opportunities'].includes(toolName)) return 'early_bird';
   if (['write_todos'].includes(toolName)) return 'todo';
@@ -39,6 +40,7 @@ export const CATEGORY_STYLES = {
   surveillance: { bg: 'bg-orange-500/10', text: 'text-orange-400/80', dot: 'bg-orange-500', label: 'SURV' },
   market: { bg: 'bg-blue-500/10', text: 'text-blue-400/80', dot: 'bg-blue-500', label: 'MKT' },
   sniper: { bg: 'bg-rose-500/10', text: 'text-rose-400/80', dot: 'bg-rose-500', label: 'SNPR' },
+  mm: { bg: 'bg-fuchsia-500/10', text: 'text-fuchsia-400/80', dot: 'bg-fuchsia-500', label: 'MM' },
   system: { bg: 'bg-teal-500/10', text: 'text-teal-400/80', dot: 'bg-teal-500', label: 'SYS' },
   early_bird: { bg: 'bg-lime-500/10', text: 'text-lime-400/80', dot: 'bg-lime-500', label: 'BIRD' },
   todo: { bg: 'bg-amber-500/10', text: 'text-amber-400/80', dot: 'bg-amber-500', label: 'TODO' },
@@ -66,6 +68,10 @@ export const TOOL_ICONS = {
   get_account_health: HeartPulse,
   get_market_movers: Globe,
   get_early_bird_opportunities: Sunrise,
+  configure_quotes: Wrench,
+  pull_quotes: AlertTriangle,
+  resume_quotes: Crosshair,
+  get_quote_performance: Database,
 };
 
 /**
@@ -133,6 +139,9 @@ export const ATTENTION_URGENCY_STYLES = {
 
 export const ATTENTION_CATEGORY_STYLES = {
   early_bird: { bg: 'bg-lime-500/12', text: 'text-lime-400', dot: 'bg-lime-500', pulse: true, label: 'EARLY BIRD' },
+  mm_fill: { bg: 'bg-fuchsia-500/12', text: 'text-fuchsia-400', dot: 'bg-fuchsia-500', pulse: false, label: 'MM FILL' },
+  mm_vpin_spike: { bg: 'bg-fuchsia-500/12', text: 'text-fuchsia-400', dot: 'bg-fuchsia-500', pulse: true, label: 'MM VPIN' },
+  mm_inventory_warning: { bg: 'bg-fuchsia-500/12', text: 'text-fuchsia-400', dot: 'bg-fuchsia-500', pulse: false, label: 'MM INV' },
 };
 
 // ─── Auto-Action Styles ─────────────────────────────────────────────────────

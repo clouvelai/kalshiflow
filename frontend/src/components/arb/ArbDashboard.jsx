@@ -36,6 +36,11 @@ const ArbDashboard = () => {
     tavilyBudget,
     lifecycleTimeline,
     trackedEvents,
+    mmSnapshot,
+    mmQuoteState,
+    mmInventory,
+    mmTradeLog,
+    mmPerformance,
   } = useArbWebSocket();
 
   const {
@@ -107,6 +112,7 @@ const ArbDashboard = () => {
         exchangeStatus={exchangeStatus}
         gatewayConfig={gatewayConfig}
         tavilyBudget={tavilyBudget}
+        mmQuoteState={mmQuoteState}
       />
 
       <div className="flex-1 flex overflow-hidden min-h-0">
@@ -153,6 +159,11 @@ const ArbDashboard = () => {
           startupMessages={startupMessages}
           lifecycleTimeline={lifecycleTimeline}
           trackedEvents={trackedEvents}
+          mmSnapshot={mmSnapshot}
+          mmQuoteState={mmQuoteState}
+          mmInventory={mmInventory}
+          mmTradeLog={mmTradeLog}
+          mmPerformance={mmPerformance}
         />
 
         <OrdersSidebar

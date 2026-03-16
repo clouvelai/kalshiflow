@@ -243,6 +243,27 @@ class TaskLedger:
         except Exception as e:
             logger.debug(f"[TASK_LEDGER] Persist failed (non-critical): {e}")
 
+    async def cleanup_old_entries(self, pool, days: int = 30) -> None:
+        """Delete old entries from captain_task_ledger table (fire-and-forget).
+
+        Args:
+            pool: asyncpg connection pool (or None to skip)
+            days: Delete entries older than this many days
+        """
+        if not pool:
+            return
+        try:
+            async with pool.acquire() as conn:
+                result = await conn.execute(
+                    f"DELETE FROM captain_task_ledger WHERE created_at < NOW() - INTERVAL '{days} days'"
+                )
+                # result is e.g. "DELETE 42"
+                count = int(result.split()[-1]) if result else 0
+                if count > 0:
+                    logger.info(f"[TASK_LEDGER] Cleaned up {count} entries older than {days} days")
+        except Exception as e:
+            logger.debug(f"[TASK_LEDGER] Cleanup failed (non-critical): {e}")
+
     async def flush(self, timeout: float = 3.0) -> int:
         """Await pending Supabase writes. Called on shutdown."""
         pending = [t for t in self._pending_writes if not t.done()]

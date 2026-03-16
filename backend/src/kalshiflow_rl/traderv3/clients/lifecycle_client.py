@@ -30,6 +30,7 @@ Design Principles:
 import asyncio
 import json
 import logging
+import random
 import time
 from typing import Dict, Any, Optional, Callable, Awaitable
 import websockets
@@ -159,24 +160,25 @@ class LifecycleClient:
             return False
 
     async def _connection_loop(self) -> None:
-        """Main connection loop with automatic reconnection."""
+        """Main connection loop with automatic reconnection (no limit)."""
+        backoff = self.base_reconnect_delay
+
         while self._running:
             try:
                 await self._connect_and_subscribe()
+                backoff = self.base_reconnect_delay  # reset on clean disconnect
+            except asyncio.CancelledError:
+                break
             except Exception as e:
-                logger.error(f"Connection loop error: {e}", exc_info=True)
-
-            if self._running:
-                # Calculate reconnect delay with exponential backoff
-                delay = min(self.base_reconnect_delay * (2 ** self._reconnect_count), 60)
-                logger.info(f"Reconnecting in {delay}s (attempt {self._reconnect_count + 1})")
-                await asyncio.sleep(delay)
-                self._reconnect_count += 1
-
-                if self._reconnect_count >= self.max_reconnect_attempts:
-                    logger.error(f"Max reconnect attempts ({self.max_reconnect_attempts}) reached")
-                    self._running = False
+                if not self._running:
                     break
+                self._reconnect_count += 1
+                delay = min(backoff * (2 ** (self._reconnect_count - 1)), 60.0)
+                delay += random.uniform(0, 2)
+                logger.warning(
+                    f"WS reconnect attempt {self._reconnect_count}, waiting {delay:.1f}s: {e}"
+                )
+                await asyncio.sleep(delay)
 
     async def _connect_and_subscribe(self) -> None:
         """Connect to WebSocket and subscribe to lifecycle channel."""

@@ -6,6 +6,9 @@ microstructure signals, arb detection, and snapshot generation.
 
 import time
 
+import pytest
+
+from kalshiflow_rl.traderv3.market_maker.fee_calculator import taker_fee
 from tests.traderv3.conftest import make_event_meta, make_index, make_market_meta
 
 
@@ -196,7 +199,7 @@ class TestEventMeta:
         assert event.deviation() is None
 
     def test_long_edge(self):
-        # sum_ask = 94, fee = 1*3 = 3, long_edge = 100 - 94 - 3 = 3
+        # sum_ask = 94, fees = taker_fee(30) + taker_fee(32) + taker_fee(32)
         event = make_event_meta(
             n_markets=3,
             market_prices=[
@@ -205,10 +208,11 @@ class TestEventMeta:
                 {"yes_bid": 30, "yes_ask": 32},
             ],
         )
-        assert event.long_edge(fee_per_contract=1) == 100 - 94 - 3
+        expected_fees = taker_fee(30) + taker_fee(32) + taker_fee(32)
+        assert event.long_edge(fee_per_contract=1) == pytest.approx(100 - 94 - expected_fees, abs=0.01)
 
     def test_short_edge(self):
-        # sum_bid = 106, fee = 1*3 = 3, short_edge = 106 - 100 - 3 = 3
+        # sum_bid = 106, fees = taker_fee(100-35) + taker_fee(100-36) + taker_fee(100-35)
         event = make_event_meta(
             n_markets=3,
             market_prices=[
@@ -217,7 +221,8 @@ class TestEventMeta:
                 {"yes_bid": 35, "yes_ask": 40},
             ],
         )
-        assert event.short_edge(fee_per_contract=1) == 106 - 100 - 3
+        expected_fees = taker_fee(65) + taker_fee(64) + taker_fee(65)
+        assert event.short_edge(fee_per_contract=1) == pytest.approx(106 - 100 - expected_fees, abs=0.01)
 
     def test_deviation(self):
         event = make_event_meta(
@@ -281,7 +286,7 @@ class TestEventArbIndex:
     """Tests for arb detection and index pipeline."""
 
     def test_detect_long_arb(self):
-        # sum_ask = 90 (3 * 30), fee = 1*3 = 3, long_edge = 100 - 90 - 3 = 7 > min_edge(3)
+        # sum_ask = 90 (3 * 30), fees = 3 * taker_fee(30)
         event = make_event_meta(
             n_markets=3,
             market_prices=[
@@ -295,7 +300,8 @@ class TestEventArbIndex:
         opp = index._detect_arb(event.event_ticker)
         assert opp is not None
         assert opp.direction == "long"
-        assert opp.edge_after_fees == 7.0
+        expected_fees = 3 * taker_fee(30)
+        assert opp.edge_after_fees == pytest.approx(100 - 90 - expected_fees, abs=0.01)
 
     def test_detect_short_arb(self):
         # sum_bid = 110 (3 * ~37), fee = 1*3 = 3, short_edge = 110 - 100 - 3 = 7

@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from .decision_ledger import DecisionLedger
     from .index import EventArbIndex
     from .memory.session_store import SessionMemoryStore
+    from .task_ledger import TaskLedger
     from ..agent_tools.session import TradingSession
     from ..gateway.client import KalshiGateway
 
@@ -84,11 +85,16 @@ class AccountHealthService:
         resume_callback: Optional[Callable[[], None]] = None,
         memory: Optional["SessionMemoryStore"] = None,
         decision_ledger: Optional["DecisionLedger"] = None,
+        task_ledger: Optional["TaskLedger"] = None,
+        db_pool=None,
     ):
         self._gateway = gateway
         self._index = index
         self._session = session
         self._order_group_id = order_group_id
+        self._protected_order_groups: Set[str] = set()
+        if order_group_id:
+            self._protected_order_groups.add(order_group_id)
         self._broadcast = broadcast_callback
         self._low_balance_threshold = low_balance_threshold
         self._max_drawdown_pct = max_drawdown_pct
@@ -96,6 +102,8 @@ class AccountHealthService:
         self._resume_callback = resume_callback
         self._memory = memory
         self._decision_ledger = decision_ledger
+        self._task_ledger = task_ledger
+        self._db_pool = db_pool
         self._cached_accuracy: Optional[DecisionAccuracyStats] = None
         self._accuracy_last_fetched: float = 0.0
 
@@ -104,6 +112,12 @@ class AccountHealthService:
         self._running = False
         self._task: Optional[asyncio.Task] = None
         self._paused_by_drawdown = False
+        self._pause_started_at: Optional[float] = None
+
+    def register_order_group(self, group_id: str) -> None:
+        """Register an additional order group as protected (e.g., MM order group)."""
+        self._protected_order_groups.add(group_id)
+        logger.info(f"[HEALTH] Protected order group registered: {group_id[:8]}...")
 
     async def start(self) -> None:
         """Start the background health loop."""
@@ -164,7 +178,9 @@ class AccountHealthService:
             changed = await self._check_order_groups()
             state_changed = state_changed or changed
             await self._enforce_memory_retention()
+            await self._enforce_task_ledger_retention()
             await self._refresh_decision_accuracy()
+            self._prune_known_settlement_ids()
 
         # Broadcast if anything changed
         if state_changed and self._broadcast:
@@ -214,6 +230,7 @@ class AccountHealthService:
             drawdown_pct = (self.state.balance_peak_cents - new_balance) / self.state.balance_peak_cents * 100
             if drawdown_pct >= self._max_drawdown_pct and not self._paused_by_drawdown:
                 self._paused_by_drawdown = True
+                self._pause_started_at = time.time()
                 self._add_alert(
                     "drawdown_circuit_breaker",
                     f"Drawdown {drawdown_pct:.1f}% >= {self._max_drawdown_pct}% threshold — PAUSING Captain",
@@ -225,6 +242,7 @@ class AccountHealthService:
             elif self._paused_by_drawdown and drawdown_pct < (self._max_drawdown_pct - 5.0):
                 # Resume when drawdown recovers below threshold - 5%
                 self._paused_by_drawdown = False
+                self._pause_started_at = None
                 self._add_alert(
                     "drawdown_recovered",
                     f"Drawdown recovered to {drawdown_pct:.1f}% — RESUMING Captain",
@@ -233,6 +251,22 @@ class AccountHealthService:
                 if self._resume_callback:
                     self._resume_callback()
                 return True
+            elif self._paused_by_drawdown and self._pause_started_at:
+                # Auto-reset after 24 hours to prevent permanent stuck state
+                pause_duration = time.time() - self._pause_started_at
+                if pause_duration > 86400:  # 24 hours
+                    logger.warning("Drawdown pause auto-reset after 24h")
+                    self.state.balance_peak_cents = new_balance
+                    self._paused_by_drawdown = False
+                    self._pause_started_at = None
+                    self._add_alert(
+                        "drawdown_auto_reset",
+                        f"Drawdown pause auto-reset after 24h. Peak reset to ${new_balance / 100:.2f}",
+                        "warning",
+                    )
+                    if self._resume_callback:
+                        self._resume_callback()
+                    return True
 
         return new_balance != prev
 
@@ -363,9 +397,9 @@ class AccountHealthService:
             created_time = order.created_time if hasattr(order, "created_time") else order.get("created_time")
             expiration_time = order.expiration_time if hasattr(order, "expiration_time") else order.get("expiration_time")
 
-            # Skip orders in the current session's order group (Captain manages those)
+            # Skip orders in any protected order group (Captain + MM manage those)
             order_group = order.order_group_id if hasattr(order, "order_group_id") else order.get("order_group_id")
-            if order_group and order_group == self._order_group_id:
+            if order_group and order_group in self._protected_order_groups:
                 continue
 
             # Check if order is stale (older than 30 minutes with no group)
@@ -413,8 +447,8 @@ class AccountHealthService:
         cleaned = 0
         for group in groups:
             gid = group.get("order_group_id", "")
-            # Skip current session's group
-            if gid == self._order_group_id:
+            # Skip any protected group (Captain + MM)
+            if gid in self._protected_order_groups:
                 continue
 
             # Try to reset then delete orphaned groups
@@ -506,6 +540,44 @@ class AccountHealthService:
                     logger.info(f"[HEALTH] Memory retention: deactivated {result} old memories")
         except Exception as e:
             logger.debug(f"[HEALTH] Memory retention check failed (non-critical): {e}")
+
+    # ------------------------------------------------------------------ #
+    #  Task ledger retention (every 60 ticks)                              #
+    # ------------------------------------------------------------------ #
+
+    async def _enforce_task_ledger_retention(self) -> None:
+        """Clean up old captain_task_ledger entries via TaskLedger."""
+        if not self._task_ledger or not self._db_pool:
+            return
+        try:
+            await self._task_ledger.cleanup_old_entries(self._db_pool, days=30)
+        except Exception as e:
+            logger.debug(f"[HEALTH] Task ledger retention failed (non-critical): {e}")
+
+    # ------------------------------------------------------------------ #
+    #  known_settlement_ids pruning (every 60 ticks)                       #
+    # ------------------------------------------------------------------ #
+
+    def _prune_known_settlement_ids(self) -> None:
+        """Prevent unbounded growth of known_settlement_ids set.
+
+        If the set exceeds 500 entries, keep only the most recent 250.
+        Since entries are composite keys (ticker:timestamp), we sort by
+        the timestamp portion to keep the newest.
+        """
+        ids = self.state.known_settlement_ids
+        if len(ids) <= 500:
+            return
+
+        # Sort by timestamp portion (after last colon), keep newest 250
+        try:
+            sorted_ids = sorted(ids, key=lambda s: s.rsplit(":", 1)[-1], reverse=True)
+            self.state.known_settlement_ids = set(sorted_ids[:250])
+            pruned = len(ids) - 250
+            logger.info(f"[HEALTH] Pruned {pruned} stale settlement IDs (kept 250)")
+        except Exception:
+            # Fallback: just keep arbitrary 250
+            self.state.known_settlement_ids = set(list(ids)[:250])
 
     # ------------------------------------------------------------------ #
     #  Decision accuracy                                                   #

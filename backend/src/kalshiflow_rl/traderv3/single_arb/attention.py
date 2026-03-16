@@ -185,6 +185,9 @@ class AttentionRouter:
 
         # Reset notification
         self._notify.clear()
+        # Re-notify if items arrived during drain
+        if self._items:
+            self._notify.set()
 
         return sorted(result, key=lambda x: x.score, reverse=True)
 
@@ -393,6 +396,9 @@ class AttentionRouter:
         # 4. Position P&L
         pnl_score = 0.0
         pnl_summary = ""
+        has_position = any(
+            p.get("event_ticker") == event_ticker for p in self._positions.values()
+        )
         for ticker, pos in self._positions.items():
             if pos.get("event_ticker") != event_ticker:
                 continue
@@ -408,9 +414,6 @@ class AttentionRouter:
         ttc = _time_to_close(event)
         time_score = 0.0
         time_summary = ""
-        has_position = any(
-            p.get("event_ticker") == event_ticker for p in self._positions.values()
-        )
         if ttc is not None and ttc < SETTLEMENT_WARN_HOURS and has_position:
             time_score = WEIGHT_TIME_PRESSURE
             time_summary = f"ttc={ttc:.1f}h with open position"
@@ -450,15 +453,24 @@ class AttentionRouter:
         elif time_score > 0:
             category = "settlement_approaching"
         elif max_vpin >= VPIN_CRITICAL_THRESHOLD:
-            # Only fire regime_change if we have capital at risk in this event
-            has_position = any(
-                p.get("event_ticker") == event_ticker for p in self._positions.values()
-            )
             category = "regime_change" if has_position else "arb_opportunity"
         elif edge_delta > 2.0:
             category = "edge_emergence"
         else:
             category = "arb_opportunity"
+
+        # Build VPIN directional info
+        vpin_data = {"max_vpin": round(max_vpin, 3)}
+        if max_vpin >= VPIN_ALERT_THRESHOLD:
+            # Find which market has the highest VPIN and its buy_sell_ratio
+            for m in event.markets.values():
+                if m.micro.vpin >= VPIN_ALERT_THRESHOLD:
+                    bsr = m.micro.buy_sell_ratio
+                    if bsr > 0.6:
+                        vpin_data["vpin_direction"] = "buy_pressure"
+                    elif bsr < 0.4:
+                        vpin_data["vpin_direction"] = "sell_pressure"
+                    break
 
         item = AttentionItem(
             event_ticker=event_ticker,
@@ -471,12 +483,68 @@ class AttentionRouter:
                 "short_edge": round(short_edge, 1),
                 "direction": direction,
                 "edge_delta": round(edge_delta, 1),
-                "max_vpin": round(max_vpin, 3),
                 "regime": self._event_regime(event),
                 "ttc_hours": ttc,
+                **vpin_data,
             },
         )
         self._emit_item(item)
+
+        # Emit per-position AttentionItems so auto-actions (stop_loss, time_exit) can fire
+        for ticker, pos in self._positions.items():
+            if pos.get("event_ticker") != event_ticker:
+                continue
+            pnl_ct = pos.get("pnl_per_ct", 0)
+            qty = pos.get("qty", 0)
+            side = pos.get("side", "")
+            if qty <= 0:
+                continue
+
+            pos_score = 0.0
+            pos_parts = []
+            pos_category = "position_risk"
+
+            # P&L threshold check
+            if pnl_ct >= PNL_PROFIT_THRESHOLD or pnl_ct <= PNL_LOSS_THRESHOLD:
+                pos_score += WEIGHT_POSITION_PNL
+                pos_parts.append(f"pnl={pnl_ct:+d}c/ct")
+
+            # Time pressure check
+            if ttc is not None and ttc < SETTLEMENT_WARN_HOURS:
+                pos_score += WEIGHT_TIME_PRESSURE
+                pos_parts.append(f"ttc={ttc:.1f}h")
+                if pos_score < WEIGHT_POSITION_PNL:
+                    pos_category = "settlement_approaching"
+
+            if pos_score < SCORE_EMIT_THRESHOLD:
+                continue
+
+            if pos_score >= URGENCY_IMMEDIATE_THRESHOLD:
+                pos_urgency = "immediate"
+            elif pos_score >= URGENCY_HIGH_THRESHOLD:
+                pos_urgency = "high"
+            else:
+                pos_urgency = "normal"
+
+            pos_item = AttentionItem(
+                event_ticker=event_ticker,
+                market_ticker=ticker,
+                urgency=pos_urgency,
+                category=pos_category,
+                summary=f"Position risk: {ticker} {side} x{qty}, {', '.join(pos_parts)}",
+                score=pos_score,
+                data={
+                    "ticker": ticker,
+                    "side": side,
+                    "quantity": qty,
+                    "avg_price": pos.get("avg_price", 0),
+                    "pnl_per_contract": pnl_ct,
+                    "ttc_hours": ttc,
+                    "event_ticker": event_ticker,
+                },
+                ttl_seconds=60.0,
+            )
+            self._emit_item(pos_item)
 
     # ------------------------------------------------------------------
     # Item management

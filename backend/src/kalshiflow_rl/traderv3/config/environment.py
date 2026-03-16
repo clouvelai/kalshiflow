@@ -130,6 +130,25 @@ class V3Config:
     prod_api_key_id: str = ""                 # V3_PROD_API_KEY_ID
     prod_private_key_content: str = ""        # V3_PROD_PRIVATE_KEY_CONTENT
 
+    # Market Maker (QuoteEngine) Configuration
+    mm_enabled: bool = False                          # V3_MM_ENABLED - master switch
+    mm_event_tickers: List[str] = field(default_factory=list)  # V3_MM_EVENT_TICKERS (comma-separated)
+    mm_base_spread_cents: int = 4                     # V3_MM_BASE_SPREAD
+    mm_max_position: int = 100                        # V3_MM_MAX_POSITION (per market)
+    mm_max_event_exposure: int = 500                  # V3_MM_MAX_EVENT_EXPOSURE
+    mm_quote_size: int = 10                           # V3_MM_QUOTE_SIZE (contracts per side)
+    mm_skew_factor: float = 0.5                      # V3_MM_SKEW_FACTOR
+    mm_refresh_interval: float = 5.0                  # V3_MM_REFRESH_INTERVAL (seconds)
+    mm_max_drawdown_cents: int = 50000                # V3_MM_MAX_DRAWDOWN ($500 default)
+
+    # Alerting Configuration
+    slack_webhook_url: Optional[str] = None          # V3_SLACK_WEBHOOK_URL
+
+    # VPIN Configuration
+    vpin_bucket_size: int = 20                       # V3_VPIN_BUCKET_SIZE
+    vpin_alert_threshold: float = 0.85               # V3_VPIN_ALERT_THRESHOLD - both MM and Sniper respond
+    vpin_critical_threshold: float = 0.95             # V3_VPIN_CRITICAL_THRESHOLD - Sniper pauses, MM pulls
+
     # Sniper Execution Layer Configuration
     sniper_enabled: bool = False                    # V3_SNIPER_ENABLED - master kill switch
     sniper_max_position: int = 25                   # V3_SNIPER_MAX_POSITION - max contracts per market
@@ -139,7 +158,7 @@ class V3Config:
     sniper_arb_min_edge: float = 0.5               # V3_SNIPER_ARB_MIN_EDGE - min edge cents for S1_ARB
     sniper_order_ttl: int = 30                     # V3_SNIPER_ORDER_TTL - order TTL in seconds
     sniper_leg_timeout: float = 5.0                # V3_SNIPER_LEG_TIMEOUT - per-leg placement timeout in seconds
-    sniper_vpin_reject_threshold: float = 0.98     # V3_SNIPER_VPIN_REJECT_THRESHOLD - VPIN above this blocks sniper (high for Kalshi thin markets)
+    sniper_vpin_reject_threshold: float = 0.92     # V3_SNIPER_VPIN_REJECT_THRESHOLD - VPIN above this blocks sniper
 
     # Discovery Configuration
     discovery_event_count: int = 10               # V3_DISCOVERY_EVENT_COUNT - top N events by volume (lifecycle bridge adds the rest)
@@ -171,6 +190,9 @@ class V3Config:
 
     # Account Health Configuration
     max_drawdown_pct: float = 25.0                 # V3_MAX_DRAWDOWN_PCT - pause Captain when drawdown exceeds this
+
+    # Captain Edge Gate Configuration
+    min_captain_edge_cents: int = 0                # V3_MIN_CAPTAIN_EDGE_CENTS - reject buy orders with 0 edge (0=permissive)
 
     # LLM Model Configuration (centralized tiers)
     model_captain: str = "claude-sonnet-4-20250514"      # V3_MODEL_CAPTAIN
@@ -366,6 +388,26 @@ class V3Config:
                     f"V3_HYBRID_DATA_MODE=true but missing: {', '.join(missing_prod)}"
                 )
 
+        # Market Maker (QuoteEngine) configuration
+        mm_enabled = os.environ.get("V3_MM_ENABLED", "false").lower() == "true"
+        mm_event_tickers_str = os.environ.get("V3_MM_EVENT_TICKERS", "")
+        mm_event_tickers = [t.strip() for t in mm_event_tickers_str.split(",") if t.strip()]
+        mm_base_spread_cents = int(os.environ.get("V3_MM_BASE_SPREAD", "4"))
+        mm_max_position = int(os.environ.get("V3_MM_MAX_POSITION", "100"))
+        mm_max_event_exposure = int(os.environ.get("V3_MM_MAX_EVENT_EXPOSURE", "500"))
+        mm_quote_size = int(os.environ.get("V3_MM_QUOTE_SIZE", "10"))
+        mm_skew_factor = float(os.environ.get("V3_MM_SKEW_FACTOR", "0.5"))
+        mm_refresh_interval = float(os.environ.get("V3_MM_REFRESH_INTERVAL", "5.0"))
+        mm_max_drawdown_cents = int(os.environ.get("V3_MM_MAX_DRAWDOWN", "50000"))
+
+        # Alerting configuration
+        slack_webhook_url = os.environ.get("V3_SLACK_WEBHOOK_URL") or None
+
+        # VPIN configuration
+        vpin_bucket_size = int(os.environ.get("V3_VPIN_BUCKET_SIZE", "20"))
+        vpin_alert_threshold = float(os.environ.get("V3_VPIN_ALERT_THRESHOLD", "0.85"))
+        vpin_critical_threshold = float(os.environ.get("V3_VPIN_CRITICAL_THRESHOLD", "0.95"))
+
         # Sniper execution layer configuration
         sniper_enabled = os.environ.get("V3_SNIPER_ENABLED", "false").lower() == "true"
         sniper_max_position = int(os.environ.get("V3_SNIPER_MAX_POSITION", "25"))
@@ -375,7 +417,7 @@ class V3Config:
         sniper_arb_min_edge = float(os.environ.get("V3_SNIPER_ARB_MIN_EDGE", "0.5"))
         sniper_order_ttl = int(os.environ.get("V3_SNIPER_ORDER_TTL", "30"))
         sniper_leg_timeout = float(os.environ.get("V3_SNIPER_LEG_TIMEOUT", "5.0"))
-        sniper_vpin_reject_threshold = float(os.environ.get("V3_SNIPER_VPIN_REJECT_THRESHOLD", "0.98"))
+        sniper_vpin_reject_threshold = float(os.environ.get("V3_SNIPER_VPIN_REJECT_THRESHOLD", "0.92"))
 
         # Discovery Configuration
         discovery_event_count = int(os.environ.get("V3_DISCOVERY_EVENT_COUNT", "10"))
@@ -408,6 +450,9 @@ class V3Config:
 
         # Account Health Configuration
         max_drawdown_pct = float(os.environ.get("V3_MAX_DRAWDOWN_PCT", "25.0"))
+
+        # Captain Edge Gate Configuration
+        min_captain_edge_cents = int(os.environ.get("V3_MIN_CAPTAIN_EDGE_CENTS", "0"))
 
         # LLM Model Configuration (centralized tiers)
         model_captain = os.environ.get("V3_MODEL_CAPTAIN", "claude-sonnet-4-20250514")
@@ -496,6 +541,15 @@ class V3Config:
             early_bird_cooldown_seconds=early_bird_cooldown_seconds,
             early_bird_use_news=early_bird_use_news,
             early_bird_auto_execute=early_bird_auto_execute,
+            mm_enabled=mm_enabled,
+            mm_event_tickers=mm_event_tickers,
+            mm_base_spread_cents=mm_base_spread_cents,
+            mm_max_position=mm_max_position,
+            mm_max_event_exposure=mm_max_event_exposure,
+            mm_quote_size=mm_quote_size,
+            mm_skew_factor=mm_skew_factor,
+            mm_refresh_interval=mm_refresh_interval,
+            mm_max_drawdown_cents=mm_max_drawdown_cents,
             single_arb_enabled=single_arb_enabled,
             single_arb_event_tickers=single_arb_event_tickers,
             single_arb_poll_interval=single_arb_poll_interval,
@@ -506,6 +560,7 @@ class V3Config:
             single_arb_captain_enabled=single_arb_captain_enabled,
             single_arb_order_ttl=single_arb_order_ttl,
             single_arb_cheval_model=single_arb_cheval_model,
+            min_captain_edge_cents=min_captain_edge_cents,
             model_captain=model_captain,
             model_subagent=model_subagent,
             model_utility=model_utility,
@@ -516,6 +571,10 @@ class V3Config:
             prod_ws_url=prod_ws_url,
             prod_api_key_id=prod_api_key_id,
             prod_private_key_content=prod_private_key_content,
+            slack_webhook_url=slack_webhook_url,
+            vpin_bucket_size=vpin_bucket_size,
+            vpin_alert_threshold=vpin_alert_threshold,
+            vpin_critical_threshold=vpin_critical_threshold,
             sniper_enabled=sniper_enabled,
             sniper_max_position=sniper_max_position,
             sniper_max_capital=sniper_max_capital,
@@ -640,6 +699,13 @@ class V3Config:
         logger.info(f"  - Discovery: top {discovery_event_count} events by volume, max_markets={discovery_max_markets_per_event}, refresh={discovery_refresh_interval}s")
         if discovery_seed_events:
             logger.info(f"    - Seed events: {','.join(discovery_seed_events)}")
+
+        # Log MM config
+        if mm_enabled:
+            logger.info(f"  - Market Maker: ENABLED (events={','.join(mm_event_tickers)}, spread={mm_base_spread_cents}c, size={mm_quote_size})")
+            logger.info(f"    - Risk: max_pos={mm_max_position}, max_exposure={mm_max_event_exposure}, drawdown=${mm_max_drawdown_cents/100:.0f}")
+        else:
+            logger.info(f"  - Market Maker: DISABLED")
 
         # Log single-arb config
         if single_arb_enabled:

@@ -365,11 +365,83 @@ class KalshiGateway:
             body["subaccount"] = self._subaccount
 
         data = await self._request("POST", "/portfolio/orders", data=body)
-        return OrderResponse.model_validate(data)
+        try:
+            return OrderResponse.model_validate(data)
+        except Exception as exc:
+            # Demo API may return slightly different shapes; fall back to raw dict.
+            logger.debug(f"OrderResponse parse failed ({exc}), raw: {data}")
+            order_data = data.get("order", data)
+            # Build order manually, skipping strict validation.
+            order = Order.model_construct(**{k: v for k, v in order_data.items() if v is not None})
+            return OrderResponse(order=order)
 
     async def cancel_order(self, order_id: str) -> Dict[str, Any]:
         """DELETE /portfolio/orders/{order_id}."""
         return await self._request("DELETE", f"/portfolio/orders/{order_id}")
+
+    async def amend_order(
+        self,
+        order_id: str,
+        price: Optional[int] = None,
+        count: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """PUT /portfolio/orders/{order_id}/amend. Modify price/size of a resting order.
+
+        Args:
+            order_id: The order to amend.
+            price: New limit price in cents (optional).
+            count: New contract count (optional).
+
+        Returns:
+            Amended order response dict.
+        """
+        body: Dict[str, Any] = {}
+        if price is not None:
+            body["price"] = price
+        if count is not None:
+            body["count"] = count
+        if self._subaccount is not None:
+            body["subaccount"] = self._subaccount
+        return await self._request("PUT", f"/portfolio/orders/{order_id}/amend", data=body)
+
+    async def batch_create_orders(
+        self, orders: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """POST /portfolio/orders/batched. Place up to 20 orders in one call.
+
+        Args:
+            orders: List of order dicts, each with ticker, action, side, count,
+                    yes_price/no_price, type, etc.
+
+        Returns:
+            List of order response dicts.
+        """
+        if len(orders) > 20:
+            raise ValueError(f"Batch limit is 20 orders, got {len(orders)}")
+
+        # Inject subaccount into each order
+        if self._subaccount is not None:
+            for order in orders:
+                order.setdefault("subaccount", self._subaccount)
+
+        body = {"orders": orders}
+        data = await self._request("POST", "/portfolio/orders/batched", data=body)
+        return data.get("orders", [])
+
+    async def batch_cancel_orders(self, order_ids: List[str]) -> Dict[str, Any]:
+        """DELETE /portfolio/orders/batched. Cancel up to 20 orders in one call.
+
+        Args:
+            order_ids: List of order IDs to cancel.
+
+        Returns:
+            Response dict with cancelled/failed counts.
+        """
+        if len(order_ids) > 20:
+            raise ValueError(f"Batch cancel limit is 20 orders, got {len(order_ids)}")
+
+        body = {"order_ids": order_ids}
+        return await self._request("DELETE", "/portfolio/orders/batched", data=body)
 
     async def get_orders(
         self,

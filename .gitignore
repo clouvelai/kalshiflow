@@ -107,8 +107,9 @@ models/
 # Project backups
 backups/
 
-# Claude Code session tracking (active session files only)
+# Claude Code session tracking and agent memory
 .claude-sessions/active/*.json
+**/.claude/agent-memory/
 
 # Research cache and backups
 research/data/cache/

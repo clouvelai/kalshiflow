@@ -126,6 +126,15 @@ class AutoActionManager:
     ) -> AutoActionResult:
         """Execute a sell order to exit a position. Shared by stop_loss and time_exit."""
         try:
+            # Verify position still exists (Captain may have already exited it)
+            positions = await self._gateway.get_positions(event_ticker=event_ticker)
+            pos_exists = any(
+                p.ticker == ticker and p.position != 0
+                for p in positions
+            )
+            if not pos_exists:
+                return AutoActionResult(acted=False, summary="position already closed")
+
             market_meta = self._find_market(event_ticker, ticker)
             if not market_meta:
                 return AutoActionResult(error=f"Market {ticker} not found")
@@ -134,17 +143,16 @@ class AutoActionManager:
             if exit_price is None or exit_price <= 0:
                 return AutoActionResult(error=f"No valid exit price for {ticker}")
 
-            response = await self._gateway.place_order(
+            response = await self._gateway.create_order(
                 ticker=ticker,
-                side=side,
                 action="sell",
+                side=side,
                 count=quantity,
+                price=exit_price,
                 type="limit",
-                yes_price=exit_price if side == "yes" else None,
-                no_price=exit_price if side == "no" else None,
             )
 
-            order_id = response.get("order", {}).get("order_id", "")
+            order_id = response.order.order_id
             if not order_id:
                 return AutoActionResult(error=f"Exit order failed: no order_id in response for {ticker}")
             return AutoActionResult(
@@ -190,7 +198,7 @@ class AutoActionManager:
     async def _handle_time_exit(self, item: AttentionItem) -> AutoActionResult:
         """Exit positions in events approaching settlement."""
         event_ticker = item.event_ticker
-        ttc_hours = item.data.get("time_to_close_hours", float("inf"))
+        ttc_hours = item.data.get("ttc_hours", float("inf"))
         ticker = item.data.get("ticker", "")
         side = item.data.get("side", "")
         quantity = item.data.get("quantity", 0)

@@ -39,6 +39,15 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("kalshiflow_rl.traderv3.single_arb.captain")
 
+
+# LLM cost rates per 1M tokens (approximate, for visibility logging)
+_MODEL_COST_RATES = {
+    "claude-sonnet-4-20250514": {"input": 3.0, "output": 15.0},
+    "claude-haiku-4-5-20251001": {"input": 0.8, "output": 4.0},
+    "gemini-2.0-flash": {"input": 0.1, "output": 0.4},
+}
+
+
 CAPTAIN_PROMPT_TEMPLATE = """You are the Captain — an autonomous Kalshi prediction market trader.
 Your edge: fast news reaction, early bird positioning on new markets, event expertise. Not speed.
 
@@ -52,7 +61,8 @@ EARLY_BIRD (highest priority, time-critical):
     2. place_order: NO limit at (100-fair_value)-2c
     3. Size {eb_complement_size}ct. Both orders are maker = 0% fees. The 4c spread IS profit.
     4. If one fills, cancel the other. If both fill, you captured the spread.
-    DO NOT search_news first. Trust the deterministic fair_value. Act in seconds.
+    If early bird data age < 60s: Trust fair_value, act immediately without news search.
+    If age > 60s: Data may be stale -- verify with get_market_state before placing orders.
   captain_decide strategy (no fair_value):
     1. search_news on event title
     2. get_market_state to see orderbook
@@ -66,7 +76,11 @@ NEWS-DRIVEN (your second-best edge):
   4. store_insight: "EVENT:[ticker] | news=[headline] | shift=[+/-Xc] | confidence=[H/M/L]"
 
 POSITION MANAGEMENT (auto-actions handle defaults, you handle overrides):
-  Auto-actions ALREADY running: stop_loss at -12c/ct, time_exit at <30min, regime_gate on toxic VPIN.
+  Auto-actions are ACTIVE and fire autonomously:
+  - stop_loss: Triggers when any position's per-contract loss exceeds the threshold (configurable via configure_automation)
+  - time_exit: Triggers when a position's time-to-close falls below the threshold (configurable via configure_automation)
+  - regime_gate: Blocks new entries when market regime shifts are detected
+  You can tune these with the configure_automation tool. They run on every attention cycle.
   Your job: override when you have BETTER INFORMATION (recent news, event knowledge).
   To exit: place_order(side=[side you hold], action="sell"). NEVER buy opposite side.
 
@@ -75,29 +89,81 @@ ME ARB (Sniper handles this autonomously):
   Captain does NOT call execute_arb for routine ME arb — Sniper is faster.
   Use execute_arb ONLY for manual arb when you spot an edge Sniper missed.
 
+MARKET MAKING (QuoteEngine runs autonomously — you add the information edge):
+  QuoteEngine posts 2-sided quotes using microstructure (no news). YOUR job: supply direction.
+  Tools: configure_quotes, pull_quotes, resume_quotes, get_quote_performance, search_news, recall_memory
+
+  REACTIVE (mm_* attention signals):
+    mm_fill: get_quote_performance. If fills are one-sided (bid >> ask or vice versa), the market
+      is moving directionally. search_news on the MM event to find why. Adjust skew via
+      configure_quotes(skew_factor=...) to lean INTO the informed flow, or pull_quotes if news is severe.
+    mm_vpin_spike: Do NOT auto-pull. Kalshi VPIN is structurally high. Instead:
+      1. search_news on the MM event. If adverse news found → pull_quotes.
+      2. If no news → configure_quotes(base_spread_cents=+2) to widen spread. Resume normal next cycle.
+    mm_inventory_warning: get_quote_performance to see which side is accumulating.
+      configure_quotes(skew_factor=...) to push quotes toward reducing inventory.
+    mm_fill_storm: pull_quotes immediately. search_news for catalyst. Resume only after reviewing.
+    mm_spread_change: Informational. Note in store_insight if spread regime changed.
+
+  STRATEGIC (every 5 min when MM active):
+    1. Always get_quote_performance. Check: adverse_selection > 60% of spread_captured? → problem.
+    2. If adverse is high: search_news on MM event tickers (listed in briefing) for directional risk.
+    3. If news found: configure_quotes(skew_factor=...) per this logic:
+       - Bullish news + long inventory → reduce skew (let it ride)
+       - Bullish news + short inventory → increase skew toward buying YES
+       - Bearish news → mirror the above
+       - No news + one-sided fills → widen spread by 1-2c
+    4. If quotes are PULLED: evaluate whether to resume_quotes based on news + time since pull.
+    5. store_insight: "MM:[event] | adverse_ratio=X | spread=Yc | action=[what you changed]"
+
+  DEEP_SCAN (every 30 min — full MM review):
+    1. get_quote_performance for session totals.
+    2. recall_memory("MM performance") for historical patterns on these events.
+    3. search_news on EACH MM event ticker for directional positioning.
+    4. Review per-market inventory in briefing. For each non-zero position:
+       - Is the position intentional (from skew) or accidental (from adverse fills)?
+       - Should you adjust max_position or skew_cap_cents?
+    5. Compare current spread to fee breakeven (~1.4c for 50c fair value). If spread < breakeven+1c, widen.
+    6. store_insight: "MM_REVIEW:[event] | net_pnl=Xc | adverse_ratio=Y | action=[changes]"
+    7. Task ledger: "[MED] Monitor [event] MM — last news was [headline]" for multi-cycle tracking.
+
 MODE BEHAVIOR:
   REACTIVE (1-3 tool calls, <45s): Respond to ATTENTION items. Trade, exit, or note why you pass.
+    For mm_* signals: follow MM reactive playbook above — never blindly pull on VPIN.
     Do NOT research unrelated events, write tasks, or call get_portfolio.
   STRATEGIC (3-8 tool calls, <2min): search_news on 1-2 active events. Check early_bird.
+    When MM active: ALWAYS get_quote_performance and tune if needed (see MM STRATEGIC above).
     Manage positions. Update task ledger with concrete next actions.
   DEEP_SCAN (5-15 tool calls, <3min): Full review. search_news on top events.
+    Full MM review with recall_memory + per-event news search (see MM DEEP_SCAN above).
     Review all positions. Check early_bird. Recall memories for patterns. Update tasks.
 
 BRIEFING DATA (already in context — do NOT re-fetch unless data changed mid-cycle):
   REACTIVE: attention items, relevant positions, sniper status, early_bird detail
-  STRATEGIC: portfolio (5 pos), health, early_bird, pending attention, sniper, tasks
-  DEEP_SCAN: all events (compact), all positions, sniper perf, health, early_bird,
-    trade memories, news memories, news impact, news patterns, tasks
+  STRATEGIC: portfolio (5 pos), health, decisions, early_bird, pending attention, sniper, MM summary + event tickers, tasks
+  DEEP_SCAN: all events (compact), all positions, sniper perf, health, decisions, early_bird,
+    trade memories, news memories, news impact, news patterns, MM detail + per-market inventory, tasks
+
+DECISION QUALITY BENCHMARKS (interpret DECISIONS stats in briefing):
+  >60% direction-correct = good signal quality, maintain current sizing.
+  <50% direction-correct = reduce position sizes and search more news before trading.
+  would_have_filled < 30% = spreads too wide, use tighter limit prices.
+
+STALE DATA WARNING: If freshness_seconds > 30 on any market, that data may be stale.
+  Call get_market_state to refresh before placing orders on that market.
 
 MEMORY STRATEGY (build a knowledge graph over time):
   STORE (via store_insight, always include event_ticker):
     - Price-news correlations: "NEWS: [headline] moved [ticker] [+/-]Xc in Yh"
     - Event observations: "[event] complement pricing held/diverged by Xc"
     - Timing patterns: "[category] markets typically settle [pattern]"
+    - MM telemetry: "MM:[event] | adverse_ratio=X | spread=Yc | skew=Z | net_pnl=Wc"
+    - MM directional learnings: "MM:[event] | [headline] caused [bid/ask]-heavy fills for Xmin"
     DO NOT store: behavioral rules, self-restrictions, recovery plans, emotions.
   RECALL (via recall_memory):
     - Before trading an event: recall past observations on that event_ticker
     - Before searching news: recall what you already know (avoid redundant searches)
+    - Before adjusting MM params: recall "MM [event_ticker]" for past tuning outcomes
     - In DEEP_SCAN: recall "price patterns [category]" for strategic insights
 
 TASK LEDGER (externalized working memory — use write_todos):
@@ -110,6 +176,8 @@ TASK LEDGER (externalized working memory — use write_todos):
 VPIN: Structurally 0.8-1.0 on Kalshi due to thin books. NORMAL. Not a reason to stop trading.
 
 RULES:
+  - BEFORE any place_order or execute_arb: state (1) bull case, (2) bear case, (3) why bull wins.
+    If you cannot rebut the bear case, DO NOT TRADE. This is mandatory for every trade.
   - If losing, find the next signal. Losses are data, not crises.
   - Every cycle MUST include at least one tool call.
   - When in doubt between more analysis and placing a small order, place the order.
@@ -235,6 +303,7 @@ class ArbCaptain:
             PatchToolCallsMiddleware(),
         ]
 
+        self._captain_middleware = captain_middleware
         self._agent = create_agent(
             resolved_model,
             tools=ALL_TOOLS,
@@ -258,6 +327,16 @@ class ArbCaptain:
 
         # Per-cycle tool call tracking (reset in _cycle_preamble)
         self._current_cycle_tools: Dict[str, int] = {}
+
+        # Backoff: consecutive LLM failures
+        self._consecutive_failures = 0
+
+        # Consecutive timeout tracking for escalation
+        self._consecutive_timeouts: int = 0
+
+        # Per-cycle token tracking (reset in _cycle_preamble)
+        self._cycle_input_tokens = 0
+        self._cycle_output_tokens = 0
 
         # Portfolio cache to avoid redundant API calls in _wait_for_trigger
         self._cached_portfolio: Optional[PortfolioState] = None
@@ -302,6 +381,21 @@ class ArbCaptain:
         self._errors.append(error)
         if len(self._errors) > 50:
             self._errors = self._errors[-50:]
+
+    def _failure_backoff(self) -> float:
+        """Compute sleep duration based on consecutive LLM failures.
+
+        Returns seconds to sleep:
+          0-2 failures: 30s (normal)
+          3-5 failures: 300s (5 min)
+          6+  failures: 900s (15 min)
+        """
+        count = self._consecutive_failures
+        if count <= 2:
+            return 30.0
+        if count <= 5:
+            return 300.0
+        return 900.0
 
     async def _run_loop(self) -> None:
         """Event-driven main loop with three invocation modes.
@@ -408,7 +502,8 @@ class ArbCaptain:
             except Exception as e:
                 logger.error(f"[CAPTAIN:ERROR] cycle={self._cycle_count + 1} error={e}\n{traceback.format_exc()}")
                 self._record_error(str(e))
-                await asyncio.sleep(30.0)
+                sleep_s = self._failure_backoff()
+                await asyncio.sleep(sleep_s)
 
     async def _run_loop_legacy(self) -> None:
         """Fixed-interval fallback loop (no AttentionRouter)."""
@@ -429,7 +524,8 @@ class ArbCaptain:
             except Exception as e:
                 logger.error(f"[CAPTAIN:ERROR] cycle={self._cycle_count + 1} error={e}\n{traceback.format_exc()}")
                 self._record_error(str(e))
-                await asyncio.sleep(30.0)
+                sleep_s = self._failure_backoff()
+                await asyncio.sleep(sleep_s)
 
     async def _run_with_timeout(self, coro, mode: str) -> None:
         """Run a cycle coroutine with mode-specific timeout."""
@@ -442,7 +538,8 @@ class ArbCaptain:
             raise
         except asyncio.TimeoutError:
             cycle_num = self._cycle_count + 1
-            logger.warning(f"[CAPTAIN:TIMEOUT] cycle={cycle_num} mode={mode} exceeded {cycle_timeout:.0f}s")
+            self._consecutive_timeouts += 1
+            logger.warning(f"[CAPTAIN:TIMEOUT] cycle={cycle_num} mode={mode} exceeded {cycle_timeout:.0f}s (consecutive={self._consecutive_timeouts})")
             logger.info(f"[CAPTAIN:CYCLE_END] cycle={cycle_num} mode={mode} status=timeout duration={cycle_timeout:.0f}s")
             self._record_error(f"timeout_{mode}_{cycle_num}")
             # Emit timeout event so frontend knows the cycle ended
@@ -455,6 +552,15 @@ class ArbCaptain:
                     "status": "timeout",
                 },
             })
+            # Escalate if 3+ consecutive timeouts — pause and auto-resume after 15 min
+            if self._consecutive_timeouts >= 3:
+                logger.error(f"[CAPTAIN] {self._consecutive_timeouts} consecutive timeouts - pausing for recovery")
+                await self._emit_event({
+                    "type": "captain_timeout_escalation",
+                    "data": {"consecutive": self._consecutive_timeouts},
+                })
+                self._paused = True
+                asyncio.get_event_loop().call_later(900, lambda: setattr(self, '_paused', False))
 
     async def _wait_for_trigger(
         self, last_strategic: float, last_deep_scan: float,
@@ -481,31 +587,11 @@ class ArbCaptain:
                 portfolio = await self._ctx.build_portfolio_state(gateway)
                 self._cached_portfolio = portfolio
                 self._portfolio_cached_at = time.time()
-                positions_for_router = [
-                    {
-                        "ticker": p.ticker,
-                        "event_ticker": p.event_ticker,
-                        "side": p.side,
-                        "quantity": p.quantity,
-                        "pnl_per_ct": round(p.unrealized_pnl_cents / p.quantity) if p.quantity else 0,
-                    }
-                    for p in portfolio.positions
-                ]
-                router.update_positions(positions_for_router)
+                router.update_positions(self._portfolio_to_router_positions(portfolio))
             except Exception:
                 pass
         elif self._cached_portfolio and router:
-            positions_for_router = [
-                {
-                    "ticker": p.ticker,
-                    "event_ticker": p.event_ticker,
-                    "side": p.side,
-                    "quantity": p.quantity,
-                    "pnl_per_ct": round(p.unrealized_pnl_cents / p.quantity) if p.quantity else 0,
-                }
-                for p in self._cached_portfolio.positions
-            ]
-            router.update_positions(positions_for_router)
+            router.update_positions(self._portfolio_to_router_positions(self._cached_portfolio))
 
         # Wait for attention router notification OR next timer, whichever comes first
         time_to_strategic = max(0.1, self._strategic_interval - (now - last_strategic))
@@ -525,6 +611,20 @@ class ArbCaptain:
         if now - last_deep_scan >= self._deep_scan_interval:
             return "deep_scan"
         return "strategic"
+
+    @staticmethod
+    def _portfolio_to_router_positions(portfolio: PortfolioState) -> List[Dict]:
+        """Convert PortfolioState positions to the format AttentionRouter expects."""
+        return [
+            {
+                "ticker": p.ticker,
+                "event_ticker": p.event_ticker,
+                "side": p.side,
+                "quantity": p.quantity,
+                "pnl_per_ct": round(p.unrealized_pnl_cents / p.quantity) if p.quantity else 0,
+            }
+            for p in portfolio.positions
+        ]
 
     # ------------------------------------------------------------------
     # Cycle pre-work (shared across all modes)
@@ -547,6 +647,10 @@ class ArbCaptain:
         # Reset per-cycle tool call tracking
         self._current_cycle_tools = {}
 
+        # Reset per-cycle token tracking
+        self._cycle_input_tokens = 0
+        self._cycle_output_tokens = 0
+
         # Clear node-level cache between cycles
         self._cache.clear()
 
@@ -562,13 +666,29 @@ class ArbCaptain:
     async def _cycle_postamble(self, mode: str, cycle_num: int, cycle_start: float,
                                 portfolio: PortfolioState) -> None:
         """Shared post-cycle logging."""
+        # Successful cycle completion — reset timeout escalation
+        self._consecutive_timeouts = 0
         cycle_duration = time.time() - cycle_start
         balance_str = f"${portfolio.balance_dollars}" if portfolio.balance_cents else "?"
         tools_str = ",".join(f"{k}:{v}" for k, v in sorted(self._current_cycle_tools.items())) or "none"
+
+        # Estimate LLM cost for this cycle
+        active_model = self._model_name
+        rates = _MODEL_COST_RATES.get(active_model, {"input": 3.0, "output": 15.0})
+        est_cost = (
+            self._cycle_input_tokens * rates["input"] / 1_000_000
+            + self._cycle_output_tokens * rates["output"] / 1_000_000
+        )
+
         logger.info(
             f"[CAPTAIN:SUMMARY] cycle={cycle_num} mode={mode} duration={cycle_duration:.1f}s "
             f"positions={portfolio.total_positions} errors={len(self._errors)} balance={balance_str} "
             f"tools={tools_str}"
+        )
+        logger.info(
+            f"[CAPTAIN:LLM_COST] cycle={cycle_num} model={active_model} "
+            f"tokens_in={self._cycle_input_tokens} tokens_out={self._cycle_output_tokens} "
+            f"est_cost=${est_cost:.4f}"
         )
         logger.info(f"[CAPTAIN:CYCLE_END] cycle={cycle_num} mode={mode} status=ok duration={cycle_duration:.1f}s")
 
@@ -582,8 +702,9 @@ class ArbCaptain:
         })
 
     async def _get_portfolio(self) -> PortfolioState:
-        """Build portfolio state, reusing cache if fresh (<5s)."""
-        if self._cached_portfolio and time.time() - self._portfolio_cached_at < 5.0:
+        """Build portfolio state, reusing cache if fresh."""
+        portfolio_ttl = getattr(self._config, 'portfolio_cache_ttl', 15.0) if self._config else 15.0
+        if self._cached_portfolio and time.time() - self._portfolio_cached_at < portfolio_ttl:
             return self._cached_portfolio
         from .tools import _ctx as tool_ctx
         gateway = tool_ctx.gateway if tool_ctx else None
@@ -593,6 +714,45 @@ class ArbCaptain:
             self._portfolio_cached_at = time.time()
             return portfolio
         return PortfolioState()
+
+    def _fetch_health_snapshot(self) -> Optional[Dict]:
+        """Fetch health status from AccountHealthService. Returns None on failure."""
+        from .tools import _ctx as tool_ctx
+        if not (tool_ctx and tool_ctx.health_service):
+            return None
+        try:
+            hs = tool_ctx.health_service.get_health_status()
+            return {
+                "drawdown_pct": hs.drawdown_pct,
+                "total_realized_pnl_cents": hs.total_realized_pnl_cents,
+                "settlement_count_session": hs.settlement_count_session,
+            }
+        except Exception:
+            return None
+
+    def _fetch_early_bird(self, mode: str) -> Optional[list]:
+        """Fetch early bird opportunities. Returns None on failure."""
+        from .tools import _ctx as tool_ctx
+        if not (tool_ctx and tool_ctx.early_bird_service):
+            return None
+        try:
+            return tool_ctx.early_bird_service.get_recent_opportunities()
+        except Exception as e:
+            logger.debug(f"[CAPTAIN:{mode.upper()}] Early bird fetch failed: {e}")
+            return None
+
+    def _fetch_decision_accuracy(self) -> Optional[Dict]:
+        """Fetch cached decision accuracy stats. Returns None on failure."""
+        from .tools import _ctx as tool_ctx
+        if not (tool_ctx and tool_ctx.health_service):
+            return None
+        try:
+            cached = tool_ctx.health_service._cached_accuracy
+            if cached:
+                return cached.model_dump() if hasattr(cached, "model_dump") else cached
+        except Exception:
+            pass
+        return None
 
     async def _invoke_agent(self, mode: str, cycle_num: int, prompt: str, trigger_items: int = 0) -> None:
         """Shared pattern: emit cycle_start, run agent, emit completion events."""
@@ -624,11 +784,12 @@ class ArbCaptain:
 
     async def _run_reactive(self, items) -> None:
         """Reactive cycle: respond to high-urgency attention items."""
-        from .models import AttentionItem
         cycle_num = self._cycle_preamble(mode="reactive")
         cycle_start = time.time()
         self._reactive_count += 1
 
+        # Bust portfolio cache for fresh data in reactive mode
+        self._portfolio_cached_at = 0
         portfolio = await self._get_portfolio()
         sniper_status = self._ctx.build_sniper_status(self._sniper_ref)
 
@@ -647,6 +808,44 @@ class ArbCaptain:
     # ------------------------------------------------------------------
     # Mode 2: STRATEGIC — every 5 min, planning and tuning
     # ------------------------------------------------------------------
+
+    def _get_mm_state(self) -> Optional[dict]:
+        """Get QuoteEngine state for context injection. Returns None if MM not active."""
+        from .tools import _ctx as tool_ctx
+        if not tool_ctx or not tool_ctx.quote_engine:
+            return None
+        try:
+            state = tool_ctx.quote_engine.state
+            mm_index = tool_ctx.mm_index
+            realized = mm_index.total_realized_pnl() if mm_index else 0.0
+            result = {
+                "enabled": tool_ctx.quote_config.enabled if tool_ctx.quote_config else False,
+                "mm_event_tickers": list(mm_index.events.keys()) if mm_index else [],
+                "total_fills": state.total_fills_bid + state.total_fills_ask,
+                "total_fills_bid": state.total_fills_bid,
+                "total_fills_ask": state.total_fills_ask,
+                "spread_captured_cents": state.spread_captured_cents,
+                "adverse_selection_cents": state.adverse_selection_cents,
+                "net_pnl_cents": realized,
+                "quotes_pulled": state.quotes_pulled,
+                "spread_multiplier": state.spread_multiplier,
+            }
+            # Per-market positions for deep scan
+            if mm_index:
+                positions = []
+                for ticker in mm_index.market_tickers:
+                    inv = mm_index.get_inventory(ticker)
+                    if inv.position != 0 or inv.realized_pnl_cents != 0:
+                        positions.append({
+                            "ticker": ticker,
+                            "position": inv.position,
+                            "realized_pnl_cents": inv.realized_pnl_cents,
+                        })
+                result["positions"] = positions
+            return result
+        except Exception as e:
+            logger.debug(f"[CAPTAIN] MM state fetch failed: {e}")
+            return None
 
     def _has_actionable_state(self, portfolio: PortfolioState) -> bool:
         """Check if there's anything worth invoking the LLM for.
@@ -684,31 +883,15 @@ class ArbCaptain:
             })
             return
 
-        # Pre-inject health so Captain doesn't need to call get_account_health
-        health = None
-        from .tools import _ctx as tool_ctx
-        if tool_ctx and tool_ctx.health_service:
-            try:
-                hs = tool_ctx.health_service.get_health_status()
-                health = {
-                    "drawdown_pct": hs.drawdown_pct,
-                    "total_realized_pnl_cents": hs.total_realized_pnl_cents,
-                    "settlement_count_session": hs.settlement_count_session,
-                }
-            except Exception:
-                pass
-
-        # Fetch early bird opportunities
-        early_bird_opportunities = None
-        if tool_ctx and tool_ctx.early_bird_service:
-            try:
-                early_bird_opportunities = tool_ctx.early_bird_service.get_recent_opportunities()
-            except Exception as e:
-                logger.debug(f"[CAPTAIN:STRATEGIC] Early bird fetch failed: {e}")
+        health = self._fetch_health_snapshot()
+        early_bird_opportunities = self._fetch_early_bird("strategic")
+        decision_accuracy = self._fetch_decision_accuracy()
+        mm_state = self._get_mm_state()
 
         body = self._ctx.build_strategic_context(
             portfolio, pending, sniper_status, self._build_task_section(),
             health=health, early_bird_opportunities=early_bird_opportunities,
+            mm_state=mm_state, decision_accuracy=decision_accuracy,
         )
         prompt = f"Cycle #{cycle_num} STRATEGIC.\n{body}"
 
@@ -747,29 +930,11 @@ class ArbCaptain:
             })
             return
 
-        # Health snapshot
-        health = None
-        from .tools import _ctx as tool_ctx
-        if tool_ctx and tool_ctx.health_service:
-            try:
-                hs = tool_ctx.health_service.get_health_status()
-                health = {
-                    "drawdown_pct": hs.drawdown_pct,
-                    "total_realized_pnl_cents": hs.total_realized_pnl_cents,
-                    "settlement_count_session": hs.settlement_count_session,
-                }
-            except Exception:
-                pass
-
-        # Fetch early bird opportunities
-        early_bird_opportunities = None
-        if tool_ctx and tool_ctx.early_bird_service:
-            try:
-                early_bird_opportunities = tool_ctx.early_bird_service.get_recent_opportunities()
-            except Exception as e:
-                logger.debug(f"[CAPTAIN:DEEP_SCAN] Early bird fetch failed: {e}")
+        health = self._fetch_health_snapshot()
+        early_bird_opportunities = self._fetch_early_bird("deep_scan")
 
         # Parallelize independent memory/DB fetches (each with per-op timeout)
+        from .tools import _ctx as tool_ctx
         async def _fetch_trade_memories():
             if not (tool_ctx and tool_ctx.memory):
                 return None
@@ -865,19 +1030,15 @@ class ArbCaptain:
             logger.warning("[CAPTAIN:DEEP_SCAN] Data fetch gather exceeded 15s, continuing with no enrichment")
             results = [None, None, None, None]
 
-        trade_memories = results[0] if not isinstance(results[0], Exception) else None
-        news_memories = results[1] if not isinstance(results[1], Exception) else None
-        market_movers = results[2] if not isinstance(results[2], Exception) else None
-        swing_patterns = results[3] if not isinstance(results[3], Exception) else None
-
-        if isinstance(results[0], Exception):
-            logger.warning(f"[CAPTAIN:DEEP_SCAN] trade_memories fetch failed: {results[0]}")
-        if isinstance(results[1], Exception):
-            logger.warning(f"[CAPTAIN:DEEP_SCAN] news_memories fetch failed: {results[1]}")
-        if isinstance(results[2], Exception):
-            logger.warning(f"[CAPTAIN:DEEP_SCAN] market_movers fetch failed: {results[2]}")
-        if isinstance(results[3], Exception):
-            logger.warning(f"[CAPTAIN:DEEP_SCAN] swing_patterns fetch failed: {results[3]}")
+        fetch_names = ("trade_memories", "news_memories", "market_movers", "swing_patterns")
+        resolved = []
+        for name, result in zip(fetch_names, results):
+            if isinstance(result, Exception):
+                logger.warning(f"[CAPTAIN:DEEP_SCAN] {name} fetch failed: {result}")
+                resolved.append(None)
+            else:
+                resolved.append(result)
+        trade_memories, news_memories, market_movers, swing_patterns = resolved
 
         await self._emit_event({
             "type": "agent_message",
@@ -886,12 +1047,16 @@ class ArbCaptain:
             "detail": "Data loaded, invoking agent...",
         })
 
+        decision_accuracy = self._fetch_decision_accuracy()
+        mm_state = self._get_mm_state()
+
         body = self._ctx.build_deep_scan_context(
             market_state, portfolio, sniper_status, health,
             trade_memories=trade_memories, news_memories=news_memories,
             task_section=self._build_task_section(), market_movers=market_movers,
             swing_patterns=swing_patterns,
             early_bird_opportunities=early_bird_opportunities,
+            mm_state=mm_state, decision_accuracy=decision_accuracy,
         )
         prompt = f"Cycle #{cycle_num} DEEP_SCAN.\n{body}"
 
@@ -937,10 +1102,16 @@ class ArbCaptain:
                 # Stream thinking tokens
                 if kind == "on_chat_model_stream":
                     chunk = event.get("data", {}).get("chunk")
-                    if chunk and hasattr(chunk, "content") and chunk.content:
-                        text = self._extract_text(chunk.content)
-                        if text:
-                            token_buffer.append(text)
+                    if chunk:
+                        # Track token usage from chunk metadata
+                        usage = getattr(chunk, "usage_metadata", None)
+                        if usage:
+                            self._cycle_input_tokens += getattr(usage, "input_tokens", 0) or 0
+                            self._cycle_output_tokens += getattr(usage, "output_tokens", 0) or 0
+                        if hasattr(chunk, "content") and chunk.content:
+                            text = self._extract_text(chunk.content)
+                            if text:
+                                token_buffer.append(text)
                         token_count += 1
                         if token_count % 10 == 0:
                             await self._emit_event({
@@ -1043,9 +1214,11 @@ class ArbCaptain:
                     "text": "".join(token_buffer),
                 })
 
+            self._consecutive_failures = 0
             return result_text
 
         except Exception as e:
+            self._consecutive_failures += 1
             logger.error(f"[CAPTAIN:ERROR] agent error: {e}")
             await self._emit_event({
                 "type": "agent_message",
@@ -1114,4 +1287,5 @@ class ArbCaptain:
                 "strategic": self._strategic_interval,
                 "deep_scan": self._deep_scan_interval,
             },
+            "consecutive_timeouts": self._consecutive_timeouts,
         }

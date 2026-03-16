@@ -24,6 +24,7 @@ Design Principles:
 from __future__ import annotations
 
 import asyncio
+import collections
 import logging
 import time
 from difflib import SequenceMatcher
@@ -87,8 +88,8 @@ class NewsIngestionService:
         # In-memory URL dedup set
         self._seen_urls: Set[str] = set()
 
-        # Headline dedup cache: list of (event_ticker, headline) tuples
-        self._seen_headlines: List[tuple] = []
+        # Headline dedup cache: bounded deque of (event_ticker, headline) tuples
+        self._seen_headlines: collections.deque = collections.deque(maxlen=5000)
 
         # Telemetry
         self._stats: Dict[str, Any] = {
@@ -419,8 +420,10 @@ class NewsIngestionService:
                         metadata=metadata,
                     )
 
-                # Track as seen
+                # Track as seen (cap at 10k; pgvector dedup catches re-ingestion)
                 if url:
+                    if len(self._seen_urls) >= 10_000:
+                        self._seen_urls.clear()
                     self._seen_urls.add(url)
                 if title:
                     self._seen_headlines.append((event_ticker, title))
