@@ -21,7 +21,6 @@ load_dotenv()
 from .trade_processor import get_trade_processor
 from .websocket_handler import get_websocket_manager, TradeStreamEndpoint
 from .kalshi_client import KalshiWebSocketClient
-from .database import get_database
 from .aggregator import get_aggregator
 from .market_metadata_service import initialize_metadata_service, get_metadata_service
 from .time_analytics_service import get_analytics_service
@@ -50,29 +49,13 @@ def custom_json_response(data, status_code=200):
 
 
 async def health_check(request):
-    """Health check endpoint — returns 503 if database is unreachable."""
-    db_ok = False
-    try:
-        database = get_database()
-        async with database.get_connection() as conn:
-            await asyncio.wait_for(conn.fetchval('SELECT 1'), timeout=3.0)
-        db_ok = True
-    except Exception:
-        pass
-
-    if db_ok:
-        return JSONResponse({
-            "status": "healthy",
-            "service": "kalshiflow-backend",
-            "version": "0.1.0",
-            "database": "connected"
-        })
-    else:
-        return JSONResponse({
-            "status": "unhealthy",
-            "service": "kalshiflow-backend",
-            "database": "unreachable"
-        }, status_code=503)
+    """Health check endpoint for the in-memory Flowboard service."""
+    return JSONResponse({
+        "status": "healthy",
+        "service": "kalshiflow-backend",
+        "version": "0.1.0",
+        "storage": "in-memory"
+    })
 
 async def health_ready(request):
     """Health check endpoint indicating if the server is ready to serve requests"""
@@ -83,11 +66,11 @@ async def health_ready(request):
             "status": "ready",
             "service": "kalshiflow-backend",
             "recovery": {
-                "enabled": recovery_status["recovery_enabled"],
+                "enabled": False,
                 "completed_at": recovery_status["completed_at"],
                 "duration_seconds": recovery_status["duration_seconds"],
-                "success": recovery_status.get("stats", {}).get("analytics", {}).get("success", False) and 
-                          recovery_status.get("stats", {}).get("aggregator", {}).get("success", False)
+                "success": True,
+                "storage": "in-memory"
             }
         })
     else:
@@ -138,11 +121,11 @@ async def get_recent_trades(request):
         return custom_json_response({"error": str(e)}, status_code=500)
 
 async def get_ticker_trades(request):
-    """Get trades for a specific ticker"""
+    """Get in-memory trades for a specific ticker"""
     ticker = request.path_params['ticker']
     try:
-        database = get_database()
-        trades = await database.get_trades_for_ticker(ticker, limit=100)
+        aggregator = get_aggregator()
+        trades = aggregator.get_trades_for_ticker(ticker, limit=100)
         return custom_json_response({
             "ticker": ticker,
             "trades": trades,
@@ -171,17 +154,9 @@ async def get_stats(request):
         stats = {
             "trade_processor": trade_stats,
             "websocket": websocket_manager.get_stats(),
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
+            "storage": "in-memory"
         }
-        
-        # Try to get database stats, but don't fail if it errors
-        try:
-            database = get_database()
-            db_stats = await database.get_db_stats()
-            db_stats["database_type"] = "PostgreSQL"
-            stats["database"] = db_stats
-        except Exception as db_error:
-            stats["database"] = {"error": str(db_error), "database_type": "PostgreSQL"}
         
         # Try to get metadata service stats
         try:
@@ -233,7 +208,7 @@ background_tasks = set()
 # Global recovery status
 recovery_status = {
     "is_complete": False,
-    "recovery_enabled": True,
+    "recovery_enabled": False,
     "started_at": None,
     "completed_at": None,
     "duration_seconds": 0.0,
@@ -247,12 +222,7 @@ async def startup_event():
     logger.info("Starting Kalshi Flowboard backend services...")
     
     try:
-        # Initialize database first
-        database = get_database()
-        await database.initialize()
-        logger.info("Database initialized: PostgreSQL")
-        
-        # Initialize trade processor
+        # Initialize trade processor (in-memory aggregator + analytics)
         trade_processor = get_trade_processor()
         await trade_processor.start()
         
@@ -260,59 +230,16 @@ async def startup_event():
         websocket_manager = get_websocket_manager()
         await websocket_manager.initialize()
         
-        # Check if recovery is enabled via environment variable
-        enable_recovery = os.getenv("ENABLE_WARM_RESTART", "true").lower() == "true"
-        recovery_status["recovery_enabled"] = enable_recovery
+        recovery_status["recovery_enabled"] = False
         recovery_status["started_at"] = datetime.now().isoformat()
+        recovery_status["is_complete"] = True
+        recovery_status["completed_at"] = datetime.now().isoformat()
+        logger.info("Cold start complete - Flowboard is in-memory only")
         
-        logger.info(f"Warm restart recovery: {'ENABLED' if enable_recovery else 'DISABLED'}")
-        
-        # Recovery Phase: Rebuild in-memory state from database
-        if enable_recovery:
-            logger.info("=== WARM RESTART RECOVERY PHASE ===")
-            recovery_start = datetime.now()
-            
-            try:
-                # Recover TimeAnalyticsService first (time series buckets)
-                analytics_service = get_analytics_service()
-                analytics_recovery_stats = await analytics_service.recover_from_database(enable_recovery=enable_recovery)
-                
-                # Recover TradeAggregator (ticker states and hot markets)  
-                aggregator = get_aggregator()
-                aggregator_recovery_stats = await aggregator.warm_start_from_database(enable_recovery=enable_recovery)
-                
-                # Calculate total recovery time
-                recovery_duration = (datetime.now() - recovery_start).total_seconds()
-                recovery_status["duration_seconds"] = recovery_duration
-                recovery_status["stats"] = {
-                    "analytics": analytics_recovery_stats,
-                    "aggregator": aggregator_recovery_stats
-                }
-                
-                if analytics_recovery_stats["success"] and aggregator_recovery_stats["success"]:
-                    logger.info(f"=== RECOVERY COMPLETED SUCCESSFULLY IN {recovery_duration:.2f}s ===")
-                    logger.info(f"Analytics: {analytics_recovery_stats['minute_buckets_created']} minute buckets, {analytics_recovery_stats['hour_buckets_created']} hour buckets")
-                    logger.info(f"Aggregator: {aggregator_recovery_stats['tickers_recovered']} tickers, {aggregator_recovery_stats['recent_trades_populated']} recent trades")
-                else:
-                    logger.warning("Recovery completed with some failures - see logs above")
-                
-            except Exception as recovery_error:
-                logger.error(f"Recovery phase failed: {recovery_error}")
-                logger.info("Continuing with cold start")
-                recovery_status["stats"]["error"] = str(recovery_error)
-            
-            recovery_status["completed_at"] = datetime.now().isoformat()
-            recovery_status["is_complete"] = True
-            logger.info("=== RECOVERY PHASE COMPLETE ===")
-        else:
-            logger.info("Recovery disabled - starting with empty state (cold start)")
-            recovery_status["is_complete"] = True
-            recovery_status["completed_at"] = datetime.now().isoformat()
-        
-        # Initialize metadata service after recovery
+        # Initialize metadata service (in-memory cache + Kalshi REST)
         try:
             auth = KalshiAuth.from_env()
-            metadata_service = initialize_metadata_service(database, auth)
+            metadata_service = initialize_metadata_service(auth)
             await metadata_service.start()
             logger.info("Market metadata service started successfully")
         except Exception as e:
@@ -371,15 +298,6 @@ async def shutdown_event():
         # Stop trade processor
         trade_processor = get_trade_processor()
         await trade_processor.stop()
-        
-        # Close database connection
-        try:
-            database = get_database()
-            if hasattr(database, 'close'):
-                await database.close()
-            logger.info("Database connection closed: PostgreSQL")
-        except Exception as e:
-            logger.warning(f"Error closing database: {e}")
         
         logger.info("All services shut down successfully")
         

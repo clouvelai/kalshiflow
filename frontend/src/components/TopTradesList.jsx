@@ -222,7 +222,7 @@ const TopTradesList = ({ trades = [], windowMinutes = 10 }) => {
 
   if (!trades || trades.length === 0) {
     return (
-      <div className="bg-white rounded-xl p-6 border border-gray-200 shadow-sm">
+      <div className="bg-white rounded-xl p-6 border border-gray-200 shadow-sm" data-testid="top-trades-list">
         <h2 className="text-lg font-bold text-gray-900 mb-4">
           Top Trades by Volume
           <span className="ml-2 text-xs text-gray-500">
@@ -237,7 +237,7 @@ const TopTradesList = ({ trades = [], windowMinutes = 10 }) => {
   }
 
   return (
-    <div className="bg-white rounded-xl p-6 border border-gray-200 shadow-sm overflow-hidden">
+    <div className="bg-white rounded-xl p-6 border border-gray-200 shadow-sm overflow-hidden" data-testid="top-trades-list">
       <h2 className="text-lg font-bold text-gray-900 mb-4">
         Top Trades by Volume
         <span className="ml-2 text-xs text-gray-500">

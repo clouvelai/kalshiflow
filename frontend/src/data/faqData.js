@@ -6,22 +6,17 @@ export const faqData = [
     answer: `This application displays live public trades data from the Kalshi API. All trade information, market prices, and trading volumes are sourced directly from Kalshi's real-time public trades WebSocket stream. This includes:
     
 • Live trade executions (YES/NO positions, prices, volumes)
-• Market metadata (titles, categories, expiration dates)
-• Trading activity analytics (volume patterns, flow direction)
+• Trading activity analytics for the current hour
+• Top trades by volume over the last 10 minutes
 
 The application does not provide investment advice and is purely for informational purposes to visualize market activity.`
   },
   {
     id: 'markets',
-    question: 'What markets are displayed?',
-    answer: `The application displays the 20 most actively traded markets based on recent trading volume. Markets are ranked by their 10-minute trading volume and include various categories such as:
+    question: 'What markets are included?',
+    answer: `The hourly Trading Activity chart aggregates every public Kalshi trade the live stream receives. Top Trades by Volume ranks the largest fills in the last 10 minutes across all markets in that stream.
 
-• Elections and political events
-• Economic indicators
-• Sports and entertainment
-• Current events and news
-
-Only markets with recent trading activity appear in the "Hot Markets" grid to focus on the most liquid and actively traded opportunities.`
+Data is kept in memory for the current session, so a server restart starts the hour view from an empty window until new trades arrive.`
   },
   {
     id: 'net-flow',

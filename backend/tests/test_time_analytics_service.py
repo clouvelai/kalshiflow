@@ -913,7 +913,7 @@ class TestStatistics:
 
 
 class TestDatabaseRecovery:
-    """Test database recovery functionality."""
+    """Persistence was removed; recovery is a no-op cold start."""
     
     @pytest.mark.asyncio
     async def test_recover_disabled(self):
@@ -930,111 +930,15 @@ class TestDatabaseRecovery:
         assert len(service.hour_buckets) == 0
     
     @pytest.mark.asyncio
-    async def test_recover_no_trades(self):
-        """Test recovery with no trades in database."""
+    async def test_recover_is_cold_start(self):
+        """Recovery no longer reads a database."""
         service = TimeAnalyticsService()
+        result = await service.recover_from_database()
         
-        with patch('kalshiflow.time_analytics_service.get_database') as mock_get_db:
-            mock_db = AsyncMock()
-            mock_db.get_recovery_trade_count.return_value = 0
-            mock_get_db.return_value = mock_db
-            
-            result = await service.recover_from_database()
-        
-        assert result["enabled"] is True
+        assert result["enabled"] is False
         assert result["success"] is True
         assert result["minute_trades_processed"] == 0
         assert result["hour_trades_processed"] == 0
-        assert mock_db.get_recovery_trade_count.called
-        assert not mock_db.get_trades_for_minute_recovery.called
-        assert not mock_db.get_trades_for_recovery.called
-    
-    @pytest.mark.asyncio
-    async def test_recover_with_trades(self):
-        """Test successful recovery with trade data."""
-        service = TimeAnalyticsService()
-        
-        # Mock trade data from database
-        minute_trades_data = [
-            {
-                "market_ticker": "PRESWIN25",
-                "yes_price": 65,
-                "no_price": 35,
-                "yes_price_dollars": 0.65,
-                "no_price_dollars": 0.35,
-                "count": 100,
-                "taker_side": "yes",
-                "ts": 1703894400000
-            }
-        ]
-        
-        hour_trades_data = [
-            {
-                "market_ticker": "PRESWIN25",
-                "yes_price": 65,
-                "no_price": 35,
-                "yes_price_dollars": 0.65,
-                "no_price_dollars": 0.35,
-                "count": 100,
-                "taker_side": "yes",
-                "ts": 1703894400000
-            },
-            {
-                "market_ticker": "CONGRESS25",
-                "yes_price": 45,
-                "no_price": 55,
-                "yes_price_dollars": 0.45,
-                "no_price_dollars": 0.55,
-                "count": 50,
-                "taker_side": "no",
-                "ts": 1703898000000
-            }
-        ]
-        
-        with patch('kalshiflow.time_analytics_service.get_database') as mock_get_db:
-            mock_db = AsyncMock()
-            mock_db.get_recovery_trade_count.return_value = 2
-            mock_db.get_trades_for_minute_recovery.return_value = minute_trades_data
-            mock_db.get_trades_for_recovery.return_value = hour_trades_data
-            mock_get_db.return_value = mock_db
-            
-            result = await service.recover_from_database()
-        
-        assert result["enabled"] is True
-        assert result["success"] is True
-        assert result["minute_trades_processed"] == 1
-        assert result["hour_trades_processed"] == 2
-        assert result["minute_buckets_created"] == 1
-        assert result["hour_buckets_created"] == 2  # Different hours
-        assert result["duration_seconds"] > 0
-        
-        # Check that buckets were created correctly
-        assert len(service.minute_buckets) == 1
-        assert len(service.hour_buckets) == 2
-        
-        # Check service stats were updated
-        assert service.stats["total_trades_processed"] == 1  # Based on minute buckets
-        assert service.stats["total_volume_usd"] == 65.0
-    
-    @pytest.mark.asyncio
-    async def test_recover_error_handling(self):
-        """Test recovery error handling."""
-        service = TimeAnalyticsService()
-        
-        with patch('kalshiflow.time_analytics_service.get_database') as mock_get_db:
-            mock_db = AsyncMock()
-            mock_db.get_recovery_trade_count.side_effect = Exception("Database error")
-            mock_get_db.return_value = mock_db
-            
-            result = await service.recover_from_database()
-        
-        assert result["enabled"] is True
-        assert result["success"] is False
-        assert "error" in result
-        assert result["error"] == "Database error"
-        assert result["duration_seconds"] > 0
-        
-        # Buckets should be cleared on error
         assert len(service.minute_buckets) == 0
         assert len(service.hour_buckets) == 0
 

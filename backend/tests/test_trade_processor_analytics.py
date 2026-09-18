@@ -17,14 +17,8 @@ class TestAnalyticsBroadcastConfiguration:
     @pytest.mark.asyncio
     async def test_analytics_interval_configuration(self):
         """Test analytics broadcast interval is configured correctly."""
-        with patch('kalshiflow.trade_processor.get_database') as mock_get_db, \
-             patch('kalshiflow.trade_processor.get_aggregator') as mock_get_agg, \
+        with patch('kalshiflow.trade_processor.get_aggregator') as mock_get_agg, \
              patch('kalshiflow.trade_processor.get_analytics_service') as mock_get_analytics:
-            
-            # Mock all dependencies
-            mock_db = AsyncMock()
-            mock_db.initialize = AsyncMock()
-            mock_get_db.return_value = mock_db
             
             mock_agg = AsyncMock()
             mock_agg.start = AsyncMock()
@@ -48,14 +42,8 @@ class TestAnalyticsBroadcastConfiguration:
     @pytest.mark.asyncio
     async def test_hot_markets_interval_configuration(self):
         """Test hot markets broadcast interval is configured correctly."""
-        with patch('kalshiflow.trade_processor.get_database') as mock_get_db, \
-             patch('kalshiflow.trade_processor.get_aggregator') as mock_get_agg, \
+        with patch('kalshiflow.trade_processor.get_aggregator') as mock_get_agg, \
              patch('kalshiflow.trade_processor.get_analytics_service') as mock_get_analytics:
-            
-            # Mock all dependencies
-            mock_db = AsyncMock()
-            mock_db.initialize = AsyncMock()
-            mock_get_db.return_value = mock_db
             
             mock_agg = AsyncMock()
             mock_agg.start = AsyncMock()
@@ -83,14 +71,8 @@ class TestBroadcastStatistics:
     @pytest.mark.asyncio
     async def test_statistics_initialization(self):
         """Test that analytics broadcast statistics are properly initialized."""
-        with patch('kalshiflow.trade_processor.get_database') as mock_get_db, \
-             patch('kalshiflow.trade_processor.get_aggregator') as mock_get_agg, \
+        with patch('kalshiflow.trade_processor.get_aggregator') as mock_get_agg, \
              patch('kalshiflow.trade_processor.get_analytics_service') as mock_get_analytics:
-            
-            # Mock all dependencies
-            mock_db = AsyncMock()
-            mock_db.initialize = AsyncMock()
-            mock_get_db.return_value = mock_db
             
             mock_agg = AsyncMock()
             mock_agg.start = AsyncMock()
@@ -125,14 +107,8 @@ class TestBroadcastStatistics:
     @pytest.mark.asyncio
     async def test_websocket_broadcaster_integration(self):
         """Test proper integration with WebSocket broadcaster."""
-        with patch('kalshiflow.trade_processor.get_database') as mock_get_db, \
-             patch('kalshiflow.trade_processor.get_aggregator') as mock_get_agg, \
+        with patch('kalshiflow.trade_processor.get_aggregator') as mock_get_agg, \
              patch('kalshiflow.trade_processor.get_analytics_service') as mock_get_analytics:
-            
-            # Mock all dependencies
-            mock_db = AsyncMock()
-            mock_db.initialize = AsyncMock()
-            mock_get_db.return_value = mock_db
             
             mock_agg = AsyncMock()
             mock_agg.start = AsyncMock()
@@ -161,14 +137,8 @@ class TestBroadcastStatistics:
     @pytest.mark.asyncio
     async def test_processor_lifecycle_with_broadcast_tasks(self):
         """Test that start/stop properly manages broadcast task lifecycle."""
-        with patch('kalshiflow.trade_processor.get_database') as mock_get_db, \
-             patch('kalshiflow.trade_processor.get_aggregator') as mock_get_agg, \
+        with patch('kalshiflow.trade_processor.get_aggregator') as mock_get_agg, \
              patch('kalshiflow.trade_processor.get_analytics_service') as mock_get_analytics:
-            
-            # Mock all dependencies
-            mock_db = AsyncMock()
-            mock_db.initialize = AsyncMock()
-            mock_get_db.return_value = mock_db
             
             mock_agg = AsyncMock()
             mock_agg.start = AsyncMock()

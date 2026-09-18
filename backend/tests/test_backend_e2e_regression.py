@@ -89,7 +89,6 @@ import uvicorn
 # Import the application and services
 from kalshiflow.app import app as kalshiflow_app, startup_event, shutdown_event
 from kalshiflow.trade_processor import get_trade_processor
-from kalshiflow.database import get_database
 from kalshiflow.aggregator import get_aggregator
 from kalshiflow.websocket_handler import get_websocket_manager
 from kalshiflow.kalshi_client import KalshiWebSocketClient
@@ -116,7 +115,7 @@ class BackendE2ETestServer:
     async def start(self) -> bool:
         """Start the backend server for testing."""
         try:
-            logger.info("Using existing PostgreSQL database for testing")
+            logger.info("Starting in-memory Flowboard backend for testing")
             
             # Override configuration for testing (no database path needed for PostgreSQL)
             with patch.dict(os.environ, {
@@ -197,21 +196,17 @@ class BackendE2ETestServer:
             return {}
     
     async def check_database_has_trades(self) -> bool:
-        """Check if database contains trade records."""
+        """Check if the in-memory aggregator has processed trades."""
         try:
-            # For PostgreSQL mode, check via the backend API stats endpoint
-            # since we don't have direct database access in tests
             stats = await self.get_stats()
-            if stats and "database" in stats:
-                total_trades = stats.get("database", {}).get("total_trades", 0)
-                logger.info(f"Database contains {total_trades} trade records")
-                return total_trades > 0
-                
-            # PostgreSQL check via stats API only - no direct database access
+            if stats and "trade_processor" in stats:
+                processed = stats.get("trade_processor", {}).get("trades_processed", 0)
+                logger.info(f"In-memory aggregator processed {processed} trades")
+                return processed > 0
             return False
                 
         except Exception as e:
-            logger.error(f"Error checking database: {e}")
+            logger.error(f"Error checking in-memory trade state: {e}")
             return False
     
     async def test_websocket_connection(self) -> bool:
@@ -397,33 +392,29 @@ async def test_backend_e2e_regression():
         if not has_trades:
             logger.info("ℹ️  INFO: No trades received during test window (this is normal during low activity periods)")
         
-        # Step 5: Database validation
-        logger.info("=== STEP 5: Database Persistence Validation ===")
-        logger.info("VALIDATING: PostgreSQL database functionality and trade storage")
+        # Step 5: In-memory aggregator validation
+        logger.info("=== STEP 5: In-Memory Aggregator Validation ===")
+        logger.info("VALIDATING: Live trade aggregation without persistent storage")
         
         if has_trades:
-            # If we got trades, verify they're in the database
-            logger.info("VALIDATING: Trade data persistence in database")
-            db_has_trades = await test_server.check_database_has_trades()
-            if not db_has_trades:
-                logger.error("❌ FAILED: Trades were processed but not found in database")
-                pytest.fail("Trades were processed but not found in database")
-            logger.info("✅ PASSED: Database persistence validated with real trade data")
+            logger.info("VALIDATING: Trades are held in memory")
+            in_memory_has_trades = await test_server.check_database_has_trades()
+            if not in_memory_has_trades:
+                logger.error("❌ FAILED: Trades were processed but aggregator stats show zero")
+                pytest.fail("Trades were processed but aggregator stats show zero")
+            logger.info("✅ PASSED: In-memory aggregation validated with live trade data")
         else:
-            # If no trades, just verify database is initialized and accessible
-            # This could happen if no trades occurred during test window
-            logger.info("VALIDATING: Database structure and accessibility (without trade data)")
+            logger.info("VALIDATING: Aggregator is running without requiring a database")
             try:
-                # For PostgreSQL mode, check via backend stats which includes database info
                 stats = await test_server.get_stats()
-                if stats and "database" in stats:
-                    db_type = stats.get("database", {}).get("database_type", "Unknown")
-                    logger.info(f"✅ PASSED: Database structure validated ({db_type} initialized)")
+                if stats and stats.get("storage") == "in-memory":
+                    logger.info("✅ PASSED: Backend reports in-memory storage")
+                elif stats and "trade_processor" in stats:
+                    logger.info("✅ PASSED: Trade processor stats available without a database")
                 else:
-                    # PostgreSQL connection issue - log warning but don't fail test
-                    logger.warning("⚠️  WARNING: Unable to validate PostgreSQL database via stats API")
+                    logger.warning("⚠️  WARNING: Unable to inspect aggregator stats")
             except Exception as e:
-                logger.error(f"❌ FAILED: Database validation error - {e}")
+                logger.error(f"❌ FAILED: Aggregator validation error - {e}")
                 raise
         
         # Step 6: Validate service integration
@@ -456,7 +447,7 @@ async def test_backend_e2e_regression():
             logger.info(f"📊 STATS: Trades processed: {has_trades and 'Yes' or 'Validated without trades'}")
             logger.info(f"📊 STATS: WebSocket connections: ✓ (connected and received snapshot)")
         
-        logger.info(f"✅ VALIDATED: Database functionality")
+        logger.info(f"✅ VALIDATED: In-memory aggregation")
         logger.info(f"✅ VALIDATED: Backend startup/shutdown cycle")
         logger.info(f"✅ VALIDATED: Service integration and communication")
         logger.info(f"✅ VALIDATED: Kalshi WebSocket connectivity")

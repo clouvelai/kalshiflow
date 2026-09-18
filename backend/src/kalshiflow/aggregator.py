@@ -12,7 +12,6 @@ import heapq
 
 from .models import Trade, TickerState
 from .market_metadata_service import get_metadata_service
-from .database import get_database
 from .duplicate_detector import TradeDuplicateDetector
 
 
@@ -83,130 +82,19 @@ class TradeAggregator:
                 pass
     
     async def warm_start_from_database(self, enable_recovery: bool = True) -> Dict[str, Any]:
-        """Reconstruct ticker states and hot markets from PostgreSQL database for warm restart.
-        
-        Args:
-            enable_recovery: Whether to enable recovery (can be disabled for testing cold start)
-        
-        Returns:
-            Dictionary with recovery statistics
+        """Cold-start helper kept for compatibility.
+
+        Persistence was removed from Flowboard; this always starts empty.
         """
         recovery_stats = {
-            "enabled": enable_recovery,
+            "enabled": False,
             "trades_processed": 0,
             "tickers_recovered": 0,
             "recent_trades_populated": 0,
             "duration_seconds": 0.0,
-            "success": False
+            "success": True
         }
-        
-        if not enable_recovery:
-            logging.getLogger(__name__).info("Aggregator recovery disabled - starting with empty state (cold start)")
-            recovery_stats["success"] = True
-            return recovery_stats
-        
-        start_time = datetime.now()
-        logger = logging.getLogger(__name__)
-        logger.info("Starting aggregator recovery from database...")
-        
-        try:
-            database = get_database()
-            
-            # Get recent trades for populating recent_trades deque
-            recent_trades_data = await database.get_recent_trades(limit=self.recent_trades.maxlen)
-            logger.info(f"Populating {len(recent_trades_data)} recent trades")
-            
-            # Populate recent trades (reverse order since database returns newest first, but we want newest last in deque)
-            for trade_data in reversed(recent_trades_data):
-                self.recent_trades.append(trade_data)
-                recovery_stats["recent_trades_populated"] += 1
-            
-            # Get trades within window for ticker state reconstruction
-            window_trades_data = await database.get_trades_in_window(window_minutes=self.window_minutes)
-            logger.info(f"Processing {len(window_trades_data)} trades for ticker state recovery")
-            
-            if len(window_trades_data) == 0:
-                logger.info("No trades found in window for recovery - starting with empty ticker states")
-                recovery_stats["success"] = True
-                return recovery_stats
-            
-            # Process trades to rebuild ticker states
-            for trade_data in window_trades_data:
-                trade = Trade(
-                    market_ticker=trade_data["market_ticker"],
-                    yes_price=trade_data["yes_price"],
-                    no_price=trade_data["no_price"],
-                    yes_price_dollars=trade_data["yes_price_dollars"],
-                    no_price_dollars=trade_data["no_price_dollars"],
-                    count=trade_data["count"],
-                    taker_side=trade_data["taker_side"],
-                    ts=trade_data["ts"]
-                )
-                
-                ticker = trade.market_ticker
-                
-                # Add to ticker-specific trade queue for window calculations
-                ticker_trades = self.trades_by_ticker[ticker]
-                ticker_trades.append(trade)
-                
-                # Add to global time-ordered heap for cleanup
-                self._trade_sequence += 1
-                heapq.heappush(self.trades_by_time, (trade.ts, self._trade_sequence, ticker, trade))
-                
-                # Update ticker state (this will recalculate all window stats)
-                if ticker not in self.ticker_states:
-                    # Create new ticker state
-                    state = TickerState(
-                        ticker=ticker,
-                        last_yes_price=trade.yes_price,
-                        last_no_price=trade.no_price,
-                        last_trade_time=trade.ts,
-                        volume_window=0,
-                        trade_count_window=0,
-                        yes_flow=0,
-                        no_flow=0,
-                        price_points=[]
-                    )
-                    self.ticker_states[ticker] = state
-                    recovery_stats["tickers_recovered"] += 1
-                
-                # Update ticker state with this trade
-                self._update_ticker_state(ticker, trade)
-                recovery_stats["trades_processed"] += 1
-                
-                # Update global statistics
-                self._daily_trades_count += 1
-                self._total_volume += trade.count
-                if trade.taker_side == "yes":
-                    self._total_net_flow += trade.count
-                else:
-                    self._total_net_flow -= trade.count
-            
-            recovery_stats["duration_seconds"] = (datetime.now() - start_time).total_seconds()
-            recovery_stats["success"] = True
-            
-            # Log recovery summary
-            total_window_volume = sum(state.volume_window for state in self.ticker_states.values())
-            logger.info(f"Aggregator recovery completed successfully in {recovery_stats['duration_seconds']:.2f}s")
-            logger.info(f"Recovered {recovery_stats['tickers_recovered']} tickers with {recovery_stats['trades_processed']} trades")
-            logger.info(f"Total window volume: {total_window_volume:,} shares, Recent trades: {recovery_stats['recent_trades_populated']}")
-            
-        except Exception as e:
-            recovery_stats["duration_seconds"] = (datetime.now() - start_time).total_seconds()
-            recovery_stats["error"] = str(e)
-            logger.error(f"Error during aggregator recovery: {e}")
-            logger.info("Continuing with empty aggregator state (cold start fallback)")
-            
-            # Clear any partially recovered data to ensure consistent state
-            self.ticker_states.clear()
-            self.trades_by_ticker.clear()
-            self.trades_by_time.clear()
-            self.recent_trades.clear()
-            self._daily_trades_count = 0
-            self._total_volume = 0
-            self._total_net_flow = 0
-            self._trade_sequence = 0
-        
+        self.logger.info("Aggregator persistence disabled - starting with empty in-memory state")
         return recovery_stats
     
     def process_trade(self, trade: Trade) -> Optional[TickerState]:
@@ -426,6 +314,15 @@ class TradeAggregator:
         
         # Recent trades are already stored newest first
         return list(self.recent_trades)[:limit]
+
+    def get_trades_for_ticker(self, ticker: str, limit: int = 100) -> List[Dict[str, Any]]:
+        """Return recent in-memory trades for a ticker, newest first."""
+        trades = self.trades_by_ticker.get(ticker)
+        if not trades:
+            return []
+        serialized = [trade.model_dump() for trade in trades]
+        serialized.reverse()
+        return serialized[:limit]
     
     def get_ticker_state(self, ticker: str) -> Optional[TickerState]:
         """Get current state for a specific ticker."""
@@ -493,14 +390,59 @@ class TradeAggregator:
                         # Ticker was already removed by another operation, continue
                         continue
     
+    def _trade_volume_dollars(self, trade: Trade) -> float:
+        """USD notional for a single trade (count * fill price)."""
+        if trade.taker_side == "yes":
+            return trade.count * trade.yes_price_dollars
+        return trade.count * trade.no_price_dollars
+
+    def _format_time_ago(self, trade_ts: int, now: datetime) -> str:
+        """Human-readable age for a millisecond timestamp."""
+        time_ago_seconds = (now.timestamp() * 1000 - trade_ts) / 1000
+        if time_ago_seconds < 60:
+            return f"{int(max(time_ago_seconds, 0))}s ago"
+        if time_ago_seconds < 3600:
+            return f"{int(time_ago_seconds / 60)}m ago"
+        return f"{int(time_ago_seconds / 3600)}h ago"
+
+    def _collect_top_trades_from_memory(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Rank in-window trades by USD volume without a database."""
+        now = datetime.now()
+        cutoff_ts = int((now.timestamp() - self._top_trades_window_minutes * 60) * 1000)
+        ranked: List[tuple[float, Trade]] = []
+
+        for ticker_trades in self.trades_by_ticker.values():
+            for trade in ticker_trades:
+                if trade.ts < cutoff_ts:
+                    continue
+                ranked.append((self._trade_volume_dollars(trade), trade))
+
+        ranked.sort(key=lambda item: item[0], reverse=True)
+
+        top_trades: List[Dict[str, Any]] = []
+        for volume_dollars, trade in ranked[:limit]:
+            top_trades.append({
+                "market_ticker": trade.market_ticker,
+                "yes_price": trade.yes_price,
+                "no_price": trade.no_price,
+                "yes_price_dollars": trade.yes_price_dollars,
+                "no_price_dollars": trade.no_price_dollars,
+                "count": trade.count,
+                "taker_side": trade.taker_side,
+                "ts": trade.ts,
+                "volume_dollars": round(volume_dollars, 4),
+                "time_ago": self._format_time_ago(trade.ts, now),
+            })
+        return top_trades
+
     async def update_top_trades(self, force: bool = False) -> List[Dict[str, Any]]:
-        """Update the list of top trades by volume from database.
+        """Update the list of top trades by volume from in-memory window data.
         
         Args:
             force: If True, force an update regardless of time interval
             
         Returns:
-            List of top trades with metadata
+            List of top trades with optional metadata
         """
         now = datetime.now()
         time_since_update = (now - self._top_trades_last_update).seconds
@@ -510,42 +452,17 @@ class TradeAggregator:
             return self._top_trades
         
         try:
-            database = get_database()
-            
-            # Get top trades from database
-            top_trades_data = await database.get_top_trades_by_volume(
-                window_minutes=self._top_trades_window_minutes,
-                limit=10
-            )
-            
-            # Get metadata service for enriching trades
+            top_trades_data = self._collect_top_trades_from_memory(limit=10)
             metadata_service = get_metadata_service()
-            
-            # Enrich trades with metadata if available
             enriched_trades = []
+
             for trade in top_trades_data:
                 enriched_trade = trade.copy()
-                
-                # Calculate human-readable time ago
-                trade_ts = trade["ts"]
-                time_ago_seconds = (now.timestamp() * 1000 - trade_ts) / 1000
-                
-                if time_ago_seconds < 60:
-                    time_ago = f"{int(time_ago_seconds)}s ago"
-                elif time_ago_seconds < 3600:
-                    time_ago = f"{int(time_ago_seconds / 60)}m ago"
-                else:
-                    time_ago = f"{int(time_ago_seconds / 3600)}h ago"
-                
-                enriched_trade["time_ago"] = time_ago
-                
-                # Add market metadata if available
                 if metadata_service:
                     metadata = await metadata_service.get_market_metadata(trade["market_ticker"])
                     if metadata:
                         enriched_trade["title"] = metadata.get("title")
                         enriched_trade["category"] = metadata.get("category")
-                
                 enriched_trades.append(enriched_trade)
             
             self._top_trades = enriched_trades

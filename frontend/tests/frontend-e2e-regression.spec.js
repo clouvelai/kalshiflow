@@ -13,9 +13,8 @@ import { join } from 'path';
  * ✓ WebSocket connection established with status "Live"
  * ✓ Real market data flows into the application
  * ✓ Analytics shows non-zero values
- * ✓ Market grid displays actual markets with volume
  * ✓ Chart renders with real data points
- * ✓ Time mode toggle works with data in both views
+ * ✓ Top trades section is present
  * ✓ Data changes over time proving real-time updates
  */
 
@@ -85,15 +84,13 @@ test.describe('Frontend E2E Regression Test - Golden Standard', () => {
       console.log('⚠️  No analytics data yet (may still be loading)');
     }
     
-    // 2. Market Grid - Should have markets
-    const marketCards = page.locator('[data-testid^="market-card-"]');
-    const marketCount = await marketCards.count();
-    
-    if (marketCount > 0) {
-      console.log(`✅ Market grid populated - ${marketCount} active markets`);
+    // 2. Top trades - component should render even if waiting for data
+    const topTradesSection = page.getByTestId('top-trades-list');
+    if (await topTradesSection.isVisible()) {
+      console.log('✅ Top trades section rendered');
     } else {
-      criticalFailures.push('No markets in grid - system not functioning properly');
-      console.log('❌ No markets in grid - critical failure');
+      criticalFailures.push('Top trades section missing');
+      console.log('❌ Top trades section missing - critical failure');
     }
     
     // 3. Chart Validation - Should have bars
@@ -106,22 +103,12 @@ test.describe('Frontend E2E Regression Test - Golden Standard', () => {
       console.log('⚠️  Chart has no visible data (may be building)');
     }
     
-    // 4. FAQ Section Check (replacing trade components)
+    // 4. FAQ Section
     const faqSection = page.getByTestId('faq-section');
     if (await faqSection.isVisible()) {
       console.log('✅ FAQ section rendered');
     } else {
       console.log('⚠️  FAQ section not visible');
-    }
-    
-    // 5. TopTradesList Component Check
-    // Simple check - just verify the component is present
-    const topTradesSection = page.locator('text=/Top.*Trades/i').first();
-    const topTradesVisible = await topTradesSection.isVisible().catch(() => false);
-    if (topTradesVisible) {
-      console.log('✅ TopTradesList component rendered');
-    } else {
-      console.log('⚠️  TopTradesList component not visible (may not have enough trades yet)');
     }
     
     // Take screenshot of data populated state
@@ -130,8 +117,7 @@ test.describe('Frontend E2E Regression Test - Golden Standard', () => {
     // Capture initial state for comparison
     const initialState = {
       volume: totalVolume,
-      trades: totalTrades,
-      marketCount: marketCount
+      trades: totalTrades
     };
     
     // ================================================================
@@ -139,19 +125,13 @@ test.describe('Frontend E2E Regression Test - Golden Standard', () => {
     // ================================================================
     console.log('\n⚡ PHASE 3: Quick functionality test');
     
-    // Test Hour/Day toggle (quick check)
-    const dayButton = page.getByTestId('day-view-button');
-    const hourButton = page.getByTestId('hour-view-button');
-    
-    await dayButton.click();
-    await page.waitForTimeout(500);
-    const dayBars = await chartBars.count();
-    
-    await hourButton.click();
-    await page.waitForTimeout(500);
-    const hourBars = await chartBars.count();
-    
-    console.log(`✅ Time toggle works - Day: ${dayBars} bars, Hour: ${hourBars} bars`);
+    const chartVisible = await page.getByTestId('analytics-chart').isVisible().catch(() => false);
+    const chartLoading = await page.getByTestId('chart-loading').isVisible().catch(() => false);
+    if (chartVisible || chartLoading) {
+      console.log('✅ Hourly trading activity chart is present');
+    } else {
+      criticalFailures.push('Trading activity chart missing');
+    }
     await takeScreenshot('04_interactive_features.png');
     
     // ================================================================
@@ -166,19 +146,16 @@ test.describe('Frontend E2E Regression Test - Golden Standard', () => {
     const updatedVolume = await page.getByTestId('total-volume-value').textContent();
     const updatedTrades = await page.getByTestId('total-trades-value').textContent();
     // Check if TradeFlowRiver is present instead of trade tape
-    const tradeFlowRiver = page.getByTestId('trade-flow-river-container');
-    const hasTradeFlow = await tradeFlowRiver.isVisible();
-    const updatedMarketCount = await marketCards.count();
+    const topTradesStillVisible = await page.getByTestId('top-trades-list').isVisible();
     
     const finalState = {
       volume: updatedVolume,
       trades: updatedTrades,
-      hasTradeFlow: hasTradeFlow,
-      marketCount: updatedMarketCount
+      topTradesVisible: topTradesStillVisible
     };
     
-    console.log(`📊 Initial: Volume=${initialState.volume}, Trades=${initialState.trades}, Markets=${initialState.marketCount}`);
-    console.log(`📊 Updated: Volume=${finalState.volume}, Trades=${finalState.trades}, Markets=${finalState.marketCount}, TradeFlow=${finalState.hasTradeFlow}`);
+    console.log(`📊 Initial: Volume=${initialState.volume}, Trades=${initialState.trades}`);
+    console.log(`📊 Updated: Volume=${finalState.volume}, Trades=${finalState.trades}, TopTrades=${finalState.topTradesVisible}`);
     
     // Check if anything changed
     let dataChanged = false;
@@ -190,8 +167,8 @@ test.describe('Frontend E2E Regression Test - Golden Standard', () => {
       console.log(`✅ Trade count updated: ${initialState.trades} → ${finalState.trades}`);
       dataChanged = true;
     }
-    if (finalState.hasTradeFlow) {
-      console.log(`✅ Trade flow river is active`);
+    if (finalState.topTradesVisible) {
+      console.log(`✅ Top trades section is active`);
     }
     
     if (!dataChanged) {
@@ -219,7 +196,7 @@ test.describe('Frontend E2E Regression Test - Golden Standard', () => {
     // Verify all components still visible
     const componentsOk = 
       await page.getByTestId('unified-analytics').isVisible() &&
-      await page.getByTestId('market-grid').isVisible() &&
+      await page.getByTestId('top-trades-list').isVisible() &&
       await page.getByTestId('faq-section').isVisible();
     
     if (componentsOk) {

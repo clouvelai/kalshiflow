@@ -276,19 +276,14 @@ const UnifiedAnalytics = ({
     summary_stats: { total_volume_usd: 0, total_trades: 0, peak_volume_usd: 0, peak_trades: 0 },
     time_series: []
   },
-  dayAnalyticsData = {
-    current_period: { timestamp: 0, volume_usd: 0, trade_count: 0 },
-    summary_stats: { total_volume_usd: 0, total_trades: 0, peak_volume_usd: 0, peak_trades: 0 },
-    time_series: []
-  },
   ...props
 }) => {
-  const [timeMode, setTimeMode] = useState('hour'); // 'hour' or 'day'
+  const timeMode = 'hour';
   
   // Get current mode analytics data
   const currentModeAnalytics = useMemo(() => {
-    return timeMode === 'hour' ? hourAnalyticsData : dayAnalyticsData;
-  }, [hourAnalyticsData, dayAnalyticsData, timeMode]);
+    return hourAnalyticsData;
+  }, [hourAnalyticsData]);
   
   // Get current period data and timestamp
   const currentPeriodData = useMemo(() => {
@@ -445,44 +440,9 @@ const UnifiedAnalytics = ({
     };
   }, [chartData]);
 
-  // Optimize time mode toggle functions
-  const handleHourModeToggle = useCallback(() => {
-    setTimeMode('hour');
-  }, []);
-
-  const handleDayModeToggle = useCallback(() => {
-    setTimeMode('day');
-  }, []);
-
   return (
     <div className="bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50 rounded-2xl p-8 mb-8 shadow-sm border border-white/20" {...props} data-testid={props['data-testid'] || "unified-analytics"}>
-      {/* Time Mode Toggle */}
-      <div className="text-center mb-8">
-        <div className="inline-flex bg-white/80 backdrop-blur-sm rounded-xl p-1.5 shadow-lg border border-gray-200/50" data-testid="time-mode-toggle">
-          <button
-            onClick={handleHourModeToggle}
-            className={`px-6 py-2.5 rounded-lg font-semibold text-sm transition-all duration-300 ${
-              timeMode === 'hour'
-                ? 'bg-blue-600 text-white shadow-lg transform scale-[1.02]'
-                : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50/50'
-            }`}
-            data-testid="hour-view-button"
-          >
-            Hour View
-          </button>
-          <button
-            onClick={handleDayModeToggle}
-            className={`px-6 py-2.5 rounded-lg font-semibold text-sm transition-all duration-300 ${
-              timeMode === 'day'
-                ? 'bg-blue-600 text-white shadow-lg transform scale-[1.02]'
-                : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50/50'
-            }`}
-            data-testid="day-view-button"
-          >
-            Day View
-          </button>
-        </div>
-      </div>
+      {/* Trading Activity is hourly-only */}
 
       {/* Summary Stats Grid - Using simplified analytics data with animated counters */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-6 mb-8" data-testid="summary-stats-grid">
@@ -491,28 +451,28 @@ const UnifiedAnalytics = ({
             <AnimatedVolumeCounter value={summaryStats.peak_volume_usd} />
           </div>
           <div className="text-sm font-medium text-gray-600 uppercase tracking-wide">Peak Volume</div>
-          <div className="text-xs text-gray-500 mt-1">{timeMode === 'hour' ? 'minute' : 'hour'}</div>
+          <div className="text-xs text-gray-500 mt-1">minute</div>
         </div>
         <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-lg border border-white/50 p-6 text-center hover:shadow-xl transition-all duration-300" data-testid="peak-trades-stat">
           <div className="text-3xl font-bold text-emerald-600 mb-1" data-testid="peak-trades-value">
             <AnimatedTradeCounter value={summaryStats.peak_trades} />
           </div>
           <div className="text-sm font-medium text-gray-600 uppercase tracking-wide">Peak Trades</div>
-          <div className="text-xs text-gray-500 mt-1">{timeMode === 'hour' ? 'minute' : 'hour'}</div>
+          <div className="text-xs text-gray-500 mt-1">minute</div>
         </div>
         <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-lg border border-white/50 p-6 text-center hover:shadow-xl transition-all duration-300" data-testid="total-volume-stat">
           <div className="text-3xl font-bold text-purple-600 mb-1" data-testid="total-volume-value">
             <AnimatedVolumeCounter value={summaryStats.total_volume_usd} />
           </div>
           <div className="text-sm font-medium text-gray-600 uppercase tracking-wide">Total Volume</div>
-          <div className="text-xs text-gray-500 mt-1">{timeMode === 'hour' ? 'hourly' : 'daily'}</div>
+          <div className="text-xs text-gray-500 mt-1">hourly</div>
         </div>
         <div className="bg-white/70 backdrop-blur-sm rounded-2xl shadow-lg border border-white/50 p-6 text-center hover:shadow-xl transition-all duration-300" data-testid="total-trades-stat">
           <div className="text-3xl font-bold text-indigo-600 mb-1" data-testid="total-trades-value">
             <AnimatedTradeCounter value={summaryStats.total_trades} />
           </div>
           <div className="text-sm font-medium text-gray-600 uppercase tracking-wide">Total Trades</div>
-          <div className="text-xs text-gray-500 mt-1">{timeMode === 'hour' ? 'hourly' : 'daily'}</div>
+          <div className="text-xs text-gray-500 mt-1">hourly</div>
         </div>
       </div>
 
@@ -560,7 +520,7 @@ const UnifiedAnalytics = ({
                         <span className="text-green-700 text-xs font-bold uppercase tracking-wider">Live</span>
                       </div>
                       <div className="text-xs text-gray-500 font-semibold uppercase tracking-wider" data-testid="current-period-label">
-                        Current {timeMode === 'hour' ? 'Minute' : 'Hour'}
+                        Current Minute
                       </div>
                     </div>
                     
